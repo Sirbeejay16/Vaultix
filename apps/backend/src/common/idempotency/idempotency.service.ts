@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThan, QueryFailedError, Repository } from 'typeorm';
+import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { IdempotencyKey } from './idempotency-key.entity';
 
 export const DEFAULT_IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
@@ -106,13 +107,10 @@ export class IdempotencyService {
   }
 
   async complete(id: string, status: number, body: unknown): Promise<void> {
-    await this.repo.update(
-      { id },
-      {
-        responseStatus: status,
-        responseBody: (body ?? null) as Record<string, unknown> | null,
-      },
-    );
+    await this.repo.update({ id }, {
+      responseStatus: status,
+      responseBody: (body ?? null) as Record<string, unknown> | null,
+    } as QueryDeepPartialEntity<IdempotencyKey>);
   }
 
   /** Failed requests are not cached, so the client may retry with the same key. */
