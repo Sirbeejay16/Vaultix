@@ -85,7 +85,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
                   this.service.complete(outcome.id, res.statusCode, body),
                 ).pipe(mergeMap(() => of(body))),
               ),
-              catchError((error) =>
+              catchError((error: unknown) =>
                 from(this.service.release(outcome.id)).pipe(
                   mergeMap(() => throwError(() => error)),
                 ),

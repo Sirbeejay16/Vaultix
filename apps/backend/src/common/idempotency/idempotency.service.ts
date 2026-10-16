@@ -108,7 +108,10 @@ export class IdempotencyService {
   async complete(id: string, status: number, body: unknown): Promise<void> {
     await this.repo.update(
       { id },
-      { responseStatus: status, responseBody: body ?? null },
+      {
+        responseStatus: status,
+        responseBody: (body ?? null) as Record<string, unknown> | null,
+      },
     );
   }
 

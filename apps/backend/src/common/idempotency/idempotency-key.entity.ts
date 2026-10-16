@@ -37,7 +37,7 @@ export class IdempotencyKey {
   responseStatus: number | null;
 
   @Column({ type: 'simple-json', nullable: true })
-  responseBody: unknown;
+  responseBody: Record<string, unknown> | null;
 
   @CreateDateColumn()
   createdAt: Date;
