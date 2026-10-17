@@ -23,6 +23,10 @@ import { CreateEscrowDto } from '../dto/create-escrow.dto';
 import { UpdateEscrowDto } from '../dto/update-escrow.dto';
 import { ListEscrowsDto, SortOrder } from '../dto/list-escrows.dto';
 import { ListEventsDto, EventSortOrder } from '../dto/list-events.dto';
+import {
+  applyHistoryFilters,
+  parseEventCursor,
+} from './event-history-query.util';
 import { EventResponseDto } from '../dto/event-response.dto';
 import { CancelEscrowDto } from '../dto/cancel-escrow.dto';
 import {
@@ -903,12 +907,15 @@ export class EscrowService {
     escrowId?: string,
   ): Promise<{
     data: EventResponseDto[];
-    total: number;
-    page: number;
+    total?: number;
+    page?: number;
     limit: number;
+    nextCursor?: string | null;
+    hasMore?: boolean;
   }> {
     const page = query.page || 1;
     const limit = query.limit || 10;
+    const useCursor = query.paginate === 'cursor';
     const skip = (page - 1) * limit;
 
     const qb: SelectQueryBuilder<EscrowEvent> = this.eventRepository
@@ -950,10 +957,33 @@ export class EscrowService {
       });
     }
 
-    const sortOrder = query.sortOrder === EventSortOrder.ASC ? 'ASC' : 'DESC';
-    qb.orderBy(`event.${query.sortBy || 'createdAt'}`, sortOrder);
+    applyHistoryFilters(qb, query);
 
-    const [events, total] = await qb.skip(skip).take(limit).getManyAndCount();
+    const sortOrder = query.sortOrder === EventSortOrder.ASC ? 'ASC' : 'DESC';
+
+    let events: EscrowEvent[];
+    let total = 0;
+    let hasMore = false;
+
+    if (useCursor) {
+      // Keyset pagination over the monotonic event cursor: stable under
+      // concurrent inserts, unlike offset paging.
+      if (query.cursor) {
+        qb.andWhere(
+          sortOrder === 'ASC'
+            ? 'event.cursor > :cursor'
+            : 'event.cursor < :cursor',
+          { cursor: parseEventCursor(query.cursor) },
+        );
+      }
+      qb.orderBy('event.cursor', sortOrder);
+      const rows = await qb.take(limit + 1).getMany();
+      hasMore = rows.length > limit;
+      events = hasMore ? rows.slice(0, limit) : rows;
+    } else {
+      qb.orderBy(`event.${query.sortBy || 'createdAt'}`, sortOrder);
+      [events, total] = await qb.skip(skip).take(limit).getManyAndCount();
+    }
 
     // Transform to response DTO
     const data: EventResponseDto[] = events.map((event) => ({
@@ -981,6 +1011,15 @@ export class EscrowService {
           }
         : undefined,
     }));
+
+    if (useCursor) {
+      return {
+        data,
+        limit,
+        hasMore,
+        nextCursor: hasMore ? data[data.length - 1].cursor : null,
+      };
+    }
 
     return { data, total, page, limit };
   }

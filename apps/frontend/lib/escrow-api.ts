@@ -251,6 +251,9 @@ export interface IEventsListResponse {
   total: number;
   page: number;
   limit: number;
+  /** Present when requested with `paginate: "cursor"`. */
+  nextCursor?: string | null;
+  hasMore?: boolean;
 }
 
 export const expireEscrow = (
@@ -271,6 +274,11 @@ export const fetchEvents = async (
     dateTo?: string;
     sortBy?: string;
     sortOrder?: "ASC" | "DESC";
+    paginate?: "cursor";
+    cursor?: string;
+    status?: string;
+    assetCode?: string;
+    search?: string;
   } = {},
 ): Promise<IEventsListResponse> => {
   const queryParams = new URLSearchParams();
@@ -282,6 +290,11 @@ export const fetchEvents = async (
   if (params.dateTo) queryParams.set("dateTo", params.dateTo);
   if (params.sortBy) queryParams.set("sortBy", params.sortBy);
   if (params.sortOrder) queryParams.set("sortOrder", params.sortOrder);
+  if (params.paginate) queryParams.set("paginate", params.paginate);
+  if (params.cursor) queryParams.set("cursor", params.cursor);
+  if (params.status) queryParams.set("status", params.status);
+  if (params.assetCode) queryParams.set("assetCode", params.assetCode);
+  if (params.search) queryParams.set("search", params.search);
 
   const queryString = queryParams.toString();
   const response = await request<IEventsListResponse>(

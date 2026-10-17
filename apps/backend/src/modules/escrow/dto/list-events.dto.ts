@@ -8,9 +8,12 @@ import {
   IsEnum,
   IsDateString,
   IsUUID,
+  IsIn,
+  MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EscrowEventType } from '../entities/escrow-event.entity';
+import { EscrowStatus } from '../entities/escrow.entity';
 
 export enum EventSortBy {
   CREATED_AT = 'createdAt',
@@ -82,4 +85,29 @@ export class ListEventsDto {
   @IsNotEmpty()
   @IsOptional()
   before?: string;
+
+  // Opt in to cursor (keyset) pagination. The response then carries
+  // `nextCursor` / `hasMore` instead of relying on `page` / `total`.
+  @IsIn(['cursor'])
+  @IsOptional()
+  paginate?: 'cursor';
+
+  // Filter by the parent escrow status
+  @IsEnum(EscrowStatus)
+  @IsOptional()
+  status?: EscrowStatus;
+
+  // Filter by the parent escrow asset code (e.g. XLM, USDC)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(12)
+  @IsOptional()
+  assetCode?: string;
+
+  // Case-insensitive text search over escrow title and escrow id
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  @IsOptional()
+  search?: string;
 }
