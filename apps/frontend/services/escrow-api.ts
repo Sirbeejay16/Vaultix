@@ -57,6 +57,9 @@ export class EscrowService {
     if (filters.sortOrder) {
       params.set('sortOrder', filters.sortOrder);
     }
+    if (filters.walletAddress) {
+      params.set('walletAddress', filters.walletAddress);
+    }
 
     const queryString = params.toString();
     const response = await apiClient.get<RawEscrowResponse>(

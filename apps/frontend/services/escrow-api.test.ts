@@ -123,6 +123,14 @@ describe('EscrowService status normalization at the API boundary', () => {
       expect(get.mock.calls[0][0]).toContain('status=expired');
     });
 
+    it('includes a wallet address filter', async () => {
+      get.mockResolvedValue({ escrows: [], hasNextPage: false });
+
+      await EscrowService.getEscrows({ walletAddress: 'GABC' });
+
+      expect(get.mock.calls[0][0]).toContain('walletAddress=GABC');
+    });
+
     it('omits the status param entirely for the "all" sentinel', async () => {
       get.mockResolvedValue({ escrows: [], hasNextPage: false });
 
