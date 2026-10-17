@@ -5,6 +5,8 @@ import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import NotificationBell from "@/components/common/NotificationBell";
 import ThemeToggle from "@/components/ThemeToggle";
+import ConnectionStatusIndicator from "@/components/common/ConnectionStatusIndicator";
+import { useTheme } from "@/components/ThemeProvider";
 
 const NAV_LINKS = [
   { href: "/", label: "Home" },
@@ -72,6 +74,51 @@ export default function Navbar(): JSX.Element {
                 </Link>
               ))}
               <ThemeToggle />
+              <div data-theme-menu className="relative">
+                <button
+                  onClick={() => setIsThemeMenuOpen(!isThemeMenuOpen)}
+                  className="p-2 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white rounded-lg focus:outline-none transition-colors cursor-pointer flex items-center gap-2"
+                  aria-label="Theme Menu"
+                >
+                  {resolvedTheme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
+                  <ChevronDown size={16} />
+                </button>
+                {isThemeMenuOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-white dark:bg-gray-900 rounded-lg shadow-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+                    <button
+                      onClick={() => {
+                        setTheme("light");
+                        setIsThemeMenuOpen(false);
+                      }}
+                      className={`w-full px-4 py-3 text-left flex items-center gap-3 text-sm transition-colors ${theme === "light" ? "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"}`}
+                    >
+                      <Sun size={18} />
+                      <span>Light</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setTheme("dark");
+                        setIsThemeMenuOpen(false);
+                      }}
+                      className={`w-full px-4 py-3 text-left flex items-center gap-3 text-sm transition-colors ${theme === "dark" ? "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"}`}
+                    >
+                      <Moon size={18} />
+                      <span>Dark</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setTheme("system");
+                        setIsThemeMenuOpen(false);
+                      }}
+                      className={`w-full px-4 py-3 text-left flex items-center gap-3 text-sm transition-colors ${theme === "system" ? "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white" : "text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50"}`}
+                    >
+                      <Monitor size={18} />
+                      <span>System</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+              <ConnectionStatusIndicator />
               <NotificationBell />
             </div>
 

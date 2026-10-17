@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   NotificationChannel,
@@ -12,6 +12,7 @@ import { WebhookSender } from './senders/webhook.sender';
 import { QueryFailedError, Repository, IsNull } from 'typeorm';
 import { EmailSender } from './senders/email.sender';
 import { PreferenceService } from './preference.service';
+import { EventsGateway } from '../gateways/events.gateway';
 
 @Injectable()
 export class NotificationService {
@@ -24,6 +25,7 @@ export class NotificationService {
     private preferenceService: PreferenceService,
     emailSender: EmailSender,
     webhookSender: WebhookSender,
+    @Optional() private readonly eventsGateway?: EventsGateway,
   ) {
     this.senders = new Map([
       [NotificationChannel.EMAIL, emailSender],
@@ -57,7 +59,7 @@ export class NotificationService {
     }
 
     try {
-      await this.repo.save(
+      const notification = await this.repo.save(
         this.repo.create({
           userId,
           eventType,
@@ -67,6 +69,7 @@ export class NotificationService {
           idempotencyKey,
         }),
       );
+      this.eventsGateway?.emitNotification(userId, notification);
     } catch (error) {
       const isUniqueViolation =
         error instanceof QueryFailedError &&
@@ -101,6 +104,10 @@ export class NotificationService {
         for (const pref of prefs) {
           if (!pref.enabled) continue;
           if (!pref.eventTypes.includes(notification.eventType)) continue;
+
+          // Digest users receive email in the daily batch, not per event
+          if (pref.channel === NotificationChannel.EMAIL && pref.digestEnabled)
+            continue;
 
           const sender = this.senders.get(pref.channel);
           if (!sender) continue;
