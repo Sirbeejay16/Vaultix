@@ -991,6 +991,8 @@ name = "onchain"
 version = "0.1.0"
 dependencies = [
  "num-bigint",
+ "serde",
+ "serde_json",
  "soroban-sdk",
 ]
 
