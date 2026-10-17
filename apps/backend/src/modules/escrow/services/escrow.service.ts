@@ -604,11 +604,16 @@ export class EscrowService {
     });
   }
 
-  async expireBySystem(id: string, reason: string): Promise<Escrow> {
+  async expireBySystem(
+    id: string,
+    reason: string,
+    eventData: Record<string, unknown> = {},
+  ): Promise<Escrow> {
     const escrow = await this.findOne(id);
     return this.expireEscrow(escrow, {
       reason,
       webhookReason: reason,
+      eventData,
     });
   }
 
@@ -1623,6 +1628,7 @@ export class EscrowService {
       ipAddress?: string;
       reason: string;
       webhookReason: string | null;
+      eventData?: Record<string, unknown>;
     },
   ): Promise<Escrow> {
     if (isTerminalStatus(escrow.status)) {
@@ -1654,6 +1660,7 @@ export class EscrowService {
       {
         reason: options.reason,
         previousStatus: escrow.status,
+        ...options.eventData,
       },
       options.ipAddress,
     );
