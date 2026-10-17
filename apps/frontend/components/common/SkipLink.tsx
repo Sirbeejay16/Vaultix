@@ -16,8 +16,8 @@ export default function SkipLink({
       className={[
         "sr-only",
         "focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50",
-        "focus:rounded focus:border focus:border-blue-600 focus:bg-white",
-        "focus:px-4 focus:py-2 focus:text-blue-700 focus:shadow-lg focus:outline-none",
+        "focus:rounded focus:border focus:border-brand focus:bg-background",
+        "focus:px-4 focus:py-2 focus:text-brand focus:shadow-lg focus:outline-none",
       ].join(" ")}
       aria-label={label}
     >
