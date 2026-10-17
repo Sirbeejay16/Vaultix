@@ -238,6 +238,7 @@ After: [screenshot]
 - Use Prettier for formatting (`.prettierrc`)
 - Prefer async/await for asynchronous code
 - Use meaningful variable names
+- **Frontend colours:** use the semantic theme tokens (`bg-background`, `text-muted-foreground`, `bg-brand`, …), not raw palette classes like `bg-white` or `text-gray-700`, so the UI works in both light and dark themes. See [Theming](apps/frontend/README.md#theming-light--dark--system).
 
 **Example:**
 
