@@ -1,16 +1,9 @@
 extern crate std;
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-    string::String,
-};
+use std::{collections::BTreeMap, fs, path::PathBuf, string::String};
 
 use serde::{Deserialize, Serialize};
-use soroban_sdk::{
-    symbol_short, testutils::Address as _, token, vec, Address, BytesN, Env,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, token, vec, Address, BytesN, Env};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -89,8 +82,13 @@ fn create_contract_client(env: &Env) -> crate::VaultixEscrowClient<'_> {
     crate::VaultixEscrowClient::new(env, &contract_id)
 }
 
-fn create_test_token<'a>(env: &'a Env, admin: &'a Address) -> (token::StellarAssetClient<'a>, Address) {
-    let token_address = env.register_stellar_asset_contract_v2(admin.clone()).address();
+fn create_test_token<'a>(
+    env: &'a Env,
+    admin: &'a Address,
+) -> (token::StellarAssetClient<'a>, Address) {
+    let token_address = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let token_admin = token::StellarAssetClient::new(env, &token_address);
     (token_admin, token_address)
 }
@@ -159,7 +157,8 @@ fn measure_list_escrows_by_party(env: &Env) -> BudgetSnapshot {
     }
 
     capture_entry_budget(env, || {
-        let _ = client.list_escrows_by_party(&depositor, &symbol_short!("depositor"), &0u32, &10u32);
+        let _ =
+            client.list_escrows_by_party(&depositor, &symbol_short!("depositor"), &0u32, &10u32);
     })
 }
 
@@ -168,7 +167,11 @@ fn assert_entry_budget(name: &str, actual: &BudgetSnapshot, expected: &BudgetSna
         ("cpu", actual.cpu, expected.cpu),
         ("memory", actual.memory, expected.memory),
         ("read_entries", actual.read_entries, expected.read_entries),
-        ("write_entries", actual.write_entries, expected.write_entries),
+        (
+            "write_entries",
+            actual.write_entries,
+            expected.write_entries,
+        ),
         ("mem_bytes", actual.mem_bytes, expected.mem_bytes),
         ("write_bytes", actual.write_bytes, expected.write_bytes),
     ] {
@@ -183,7 +186,11 @@ fn assert_entry_budget(name: &str, actual: &BudgetSnapshot, expected: &BudgetSna
 #[test]
 fn contract_budget_baseline_is_committed() {
     let path = baseline_path();
-    assert!(path.exists(), "expected committed baseline at {}", path.display());
+    assert!(
+        path.exists(),
+        "expected committed baseline at {}",
+        path.display()
+    );
 }
 
 #[test]
@@ -193,12 +200,18 @@ fn contract_budget_regression_guard() {
 
     let actual = BTreeMap::from([
         (String::from("create_escrow"), measure_create_escrow(&env)),
-        (String::from("list_escrows_by_party"), measure_list_escrows_by_party(&env)),
+        (
+            String::from("list_escrows_by_party"),
+            measure_list_escrows_by_party(&env),
+        ),
     ]);
 
     if std::env::var_os("UPDATE_BUDGET_BASELINE").is_some() {
         write_baseline(&BudgetBaseline { entries: actual });
-        std::println!("updated Soroban budget baseline at {}", baseline_path().display());
+        std::println!(
+            "updated Soroban budget baseline at {}",
+            baseline_path().display()
+        );
         return;
     }
 
