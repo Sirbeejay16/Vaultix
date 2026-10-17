@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import type { BiometricAvailability } from '../hooks/useBiometricLock';
+import { colors } from '../theme';
 
 interface MobileLockScreenProps {
   onUnlock: () => void;
@@ -24,39 +25,32 @@ export const MobileLockScreen: React.FC<MobileLockScreenProps> = ({
         : 'Biometric unlock is currently unavailable.';
 
   return (
-    <View style={styles.container}>
-      <View style={styles.iconContainer}>
+    <View style={styles.container} accessibilityViewIsModal>
+      <View style={styles.iconContainer} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
         <Text style={styles.icon}>🔒</Text>
       </View>
-      <Text style={styles.title}>App Locked</Text>
-      <Text style={styles.subtitle}>
-        {biometricsUnavailable
-          ? unavailableMessage
-          : 'Unlock to access your secure Vaultix session.'}
-      </Text>
+      <Text style={styles.title} accessibilityRole="header">App Locked</Text>
+      <Text style={styles.subtitle}>Unlock to access your secure Vaultix session.</Text>
 
-      {!biometricsUnavailable && (
-        <TouchableOpacity style={styles.unlockButton} onPress={onUnlock}>
-          <Text style={styles.unlockButtonText}>Unlock with Biometrics</Text>
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity
+        style={styles.unlockButton}
+        onPress={onUnlock}
+        accessibilityRole="button"
+        accessibilityLabel="Unlock with biometrics"
+        accessibilityHint="Opens the Face ID, Touch ID or fingerprint prompt to unlock Vaultix"
+      >
+        <Text style={styles.unlockButtonText}>Unlock with Biometrics</Text>
+      </TouchableOpacity>
 
-      {biometricsUnavailable ? (
-        <>
-          <Text style={styles.recoveryHint}>
-            You can disable biometric lock using your device passcode, or force
-            recovery if the sensor cannot be used. This does not delete your
-            wallet — only turns off the lock screen.
-          </Text>
-          <TouchableOpacity style={styles.unlockButton} onPress={onDisableFallback}>
-            <Text style={styles.unlockButtonText}>Recover — Disable Lock</Text>
-          </TouchableOpacity>
-        </>
-      ) : (
-        <TouchableOpacity style={styles.fallbackButton} onPress={onDisableFallback}>
-          <Text style={styles.fallbackButtonText}>Disable Biometric Lock</Text>
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity
+        style={styles.fallbackButton}
+        onPress={onDisableFallback}
+        accessibilityRole="button"
+        accessibilityLabel="Disable biometric lock"
+        accessibilityHint="Turns off the biometric app lock so Vaultix opens without it"
+      >
+        <Text style={styles.fallbackButtonText}>Disable Biometric Lock</Text>
+      </TouchableOpacity>
     </View>
   );
 };
@@ -66,7 +60,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#0F172A',
+    backgroundColor: colors.background,
     padding: 24,
   },
   iconContainer: {
@@ -78,24 +72,24 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#FFFFFF',
+    color: colors.text,
     marginBottom: 12,
   },
   subtitle: {
     fontSize: 16,
-    color: '#94A3B8',
+    color: colors.textSecondary,
     textAlign: 'center',
     marginBottom: 24,
   },
   recoveryHint: {
     fontSize: 14,
-    color: '#CBD5E1',
+    color: colors.textSecondary,
     textAlign: 'center',
     marginBottom: 24,
     lineHeight: 20,
   },
   unlockButton: {
-    backgroundColor: '#3B82F6',
+    backgroundColor: colors.infoStrong,
     paddingVertical: 14,
     paddingHorizontal: 32,
     borderRadius: 8,
@@ -104,7 +98,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   unlockButtonText: {
-    color: '#FFFFFF',
+    color: colors.text,
     fontSize: 16,
     fontWeight: '600',
   },
@@ -115,7 +109,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   fallbackButtonText: {
-    color: '#94A3B8',
+    color: colors.textSecondary,
     fontSize: 16,
   },
 });

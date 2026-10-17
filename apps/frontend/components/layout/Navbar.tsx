@@ -4,6 +4,7 @@ import { useState, useEffect, JSX } from "react";
 import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import NotificationBell from "@/components/common/NotificationBell";
+import ConnectionStatusIndicator from "@/components/common/ConnectionStatusIndicator";
 import ThemeToggle from "@/components/ThemeToggle";
 
 const NAV_LINKS = [
@@ -72,6 +73,7 @@ export default function Navbar(): JSX.Element {
                 </Link>
               ))}
               <ThemeToggle />
+              <ConnectionStatusIndicator />
               <NotificationBell />
             </div>
 

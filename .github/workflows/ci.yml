@@ -35,3 +35,20 @@ jobs:
             exit 1
           fi
           echo 'No conflict markers found in tracked files.'
+
+  lockfile-guard:
+    name: Reject non-npm lockfiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if a non-npm lockfile is committed
+        run: |
+          set -euo pipefail
+          stray="$(git ls-files | grep -E '(^|/)(pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock)$' || true)"
+          if [ -n "$stray" ]; then
+            echo "::error::Vaultix standardises on npm (package-lock.json); found non-npm lockfile(s):"
+            echo "$stray"
+            echo "See the 'Package manager' section in README.md / CONTRIBUTING.md."
+            exit 1
+          fi
+          echo 'Lockfiles OK (npm only).'
