@@ -17,5 +17,39 @@ services:
       timeout: 5s
       retries: 10
 
+  backend:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:-local-compose-secret-change-this-before-use-0123456789}
+      DATABASE_URL: postgresql://vaultix_user:vaultix_pass@postgres:5432/vaultix_db
+      DATABASE_SSL: "false"
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3000}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-http://localhost:3000}
+        NEXT_PUBLIC_STELLAR_NETWORK: ${NEXT_PUBLIC_STELLAR_NETWORK:-testnet}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - '3001:3000'
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   vaultix_postgres_data:
