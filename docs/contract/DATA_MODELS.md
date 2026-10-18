@@ -1,23 +1,53 @@
 # Data Models & Storage Layout
 
+> **See also:** [STATUS_MAPPING.md](../STATUS_MAPPING.md) for cross-layer status mapping · [EVENTS.md](EVENTS.md) for event schema · [WORKFLOWS.md](WORKFLOWS.md) for state transitions
+
 This document outlines the core data structures and key-value storage layout of the `VaultixEscrow` smart contract.
 
 ## Structs & Enums
 
 ### `Escrow`
-The primary structure detailing a specific escrow transaction.
+The primary structure returned by public query entrypoints.
 ```rust
 pub struct Escrow {
-    pub depositor: Address,        // The creator and funder of the escrow
-    pub recipient: Address,        // The intended beneficiary
-    pub token_address: Address,    // The token being escrowed
-    pub total_amount: i128,        // The total amount across all milestones
-    pub total_released: i128,      // Amount released so far
-    pub milestones: Vec<Milestone>,// List of milestones to complete
-    pub status: EscrowStatus,      // Current state of the escrow
-    pub deadline: u64,             // Expiration timestamp for refunds
-    pub resolution: Resolution,    // Outcome if a dispute occurred
-    pub metadata_hash: BytesN<32>, // Canonical 32-byte metadata digest
+    pub depositor: Address,
+    pub recipient: Address,
+    pub token_address: Address,
+    pub total_amount: i128,
+    pub total_released: i128,
+    pub milestones: Vec<Milestone>,
+    pub status: EscrowStatus,
+    pub deadline: u64,
+    pub resolution: Resolution,
+    pub threshold_amount: i128,
+    pub required_signatures: u32,
+    pub collected_signatures: Vec<Address>,
+    pub metadata_hash: BytesN<32>,
+}
+```
+
+### `EscrowEntryV2`
+The internal persisted representation for the current escrow storage layout.
+- Stored under `("esc2", escrow_id)` as `EscrowEntryV2`.
+- Includes the packed escrow state, fee override metadata, and all fields required for migration.
+- When a legacy `Escrow` entry exists under `("escrow", escrow_id)`, the contract migrates it lazily on first access.
+- A companion version marker is stored under `("escver", escrow_id)` as a `u8`.
+
+```rust
+struct EscrowEntryV2 {
+    depositor: Address,
+    recipient: Address,
+    token_address: Address,
+    total_amount: i128,
+    total_released: i128,
+    milestones: Vec<Milestone>,
+    packed_state: u32,
+    deadline: u64,
+    threshold_amount: i128,
+    required_signatures: u32,
+    collected_signatures: Vec<Address>,
+    fee_override_bps: i128,
+    metadata_hash: BytesN<32>,
 }
 ```
 
@@ -41,6 +71,16 @@ pub struct Milestone {
     pub amount: i128,              // The payout amount for this milestone
     pub status: MilestoneStatus,   // Pending, Released, or Disputed
     pub description: Symbol,       // Short description or identifier
+}
+```
+
+### `AdminProposal`
+Represents a pending two-step admin transfer (see "Admin Transfer (Two-Step
+Handshake)" in `README.md`).
+```rust
+pub struct AdminProposal {
+    pub new_admin: Address, // Address waiting to become admin
+    pub expires_at: u64,    // Ledger timestamp after which accept_admin() fails
 }
 ```
 
@@ -73,8 +113,13 @@ Holds global configuration data required frequently.
 ### Persistent Storage
 Holds longer-term state, retaining data specifically for individual escrows and specific roles.
 - `admin` (`Symbol`): (`Address`) The contract admin.
+- `admprop` (`Symbol`): (`AdminProposal`) Pending two-step admin transfer created by `propose_admin`; expires (becomes un-acceptable) after `ADMIN_PROPOSAL_WINDOW_SECS` ledger seconds and is removed on a successful `accept_admin` or a `cancel_admin_proposal`.
 - `operator` (`Symbol`): (`Address`) The emergency operator.
 - `arbitrator` (`Symbol`): (`Address`) The dispute resolution arbitrator.
-- `("escrow", id: u64)`: (`Escrow`) The main data object for an escrow by ID.
+- `("escrow", id: u64)`: (`Escrow`) Legacy escrow record format, migrated on access.
+- `("esc2", id: u64)`: (`EscrowEntryV2`) Current escrow record format with packed state and fee override metadata.
+- `("escver", id: u64)`: (`u8`) Explicit V2 escrow version marker companion value.
 - `("tokfee", token: Address)`: (`i128`) A token-specific fee BPS override.
 - `("escfee", escrow_id: u64)`: (`i128`) An escrow-specific fee BPS override.
+- `("dispev", escrow_id: u64)`: (`BytesN<32>`) Evidence digest recorded by `raise_dispute`, written only for disputed escrows and given the same TTL as the escrow entry.
+- `("disprev", escrow_id: u64)`: (`BytesN<32>`) Optional resolution evidence digest recorded by the arbitrator in `resolve_dispute`.

@@ -1,3 +1,13 @@
+/**
+ * Escrow and milestone types for the frontend.
+ *
+ * The escrow/milestone status model is reconciled across the contract, backend,
+ * and clients in docs/STATUS_MAPPING.md. Status values crossing the API boundary
+ * are normalized to CanonicalEscrowStatus (see utils/escrowStatus.ts); consult
+ * STATUS_MAPPING.md before adding or renaming a status here.
+ */
+import { CanonicalEscrowStatus } from '@/utils/escrowStatus';
+
 export interface IEscrow {
   id: string;
   title: string;
@@ -7,21 +17,11 @@ export interface IEscrow {
   creatorAddress: string;
   counterpartyAddress: string;
   deadline: string;
-  status:
-    | "created"
-    | "funded"
-    | "confirmed"
-    | "released"
-    | "completed"
-    | "cancelled"
-    | "disputed"
-    | "expired"
-    | "PENDING"
-    | "ACTIVE"
-    | "COMPLETED"
-    | "CANCELLED"
-    | "DISPUTED"
-    | "EXPIRED";
+  /**
+   * Canonical status. Values crossing the API boundary are normalized once
+   * (see `utils/escrowStatus.ts`), so consumers never see the raw wire casing.
+   */
+  status: CanonicalEscrowStatus;
   createdAt: string;
   updatedAt: string;
   milestones?: Array<{
@@ -64,23 +64,34 @@ export interface ICondition {
   updatedAt?: string;
 }
 
+export type EscrowEventType =
+  | "CREATED"
+  | "UPDATED"
+  | "FUNDED"
+  | "PARTY_ADDED"
+  | "PARTY_ACCEPTED"
+  | "PARTY_REJECTED"
+  | "CONDITION_FULFILLED"
+  | "CONDITION_MET"
+  | "MILESTONE_RELEASED"
+  | "DISPUTE_FILED"
+  | "DISPUTE_RESOLVED"
+  | "DISPUTED"
+  | "RESOLVED"
+  | "STATUS_CHANGED"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "EXPIRED"
+  | (string & {});
+
 export interface IEscrowEvent {
   id: string;
-  eventType:
-    | "CREATED"
-    | "PARTY_ADDED"
-    | "PARTY_ACCEPTED"
-    | "PARTY_REJECTED"
-    | "FUNDED"
-    | "CONDITION_MET"
-    | "STATUS_CHANGED"
-    | "UPDATED"
-    | "CANCELLED"
-    | "COMPLETED"
-    | "DISPUTED";
+  escrowId?: string;
+  eventType: EscrowEventType;
   actorId?: string;
   data?: Record<string, any>;
   ipAddress?: string;
+  cursor?: string;
   createdAt: string;
 }
 
@@ -118,6 +129,21 @@ export interface IEscrowResponse {
   totalCount?: number;
 }
 
+/**
+ * Wire shape of an escrow as returned by the API. The backend sends lowercase
+ * status values and may add new ones, so the status is typed loosely here and
+ * narrowed by `normalizeEscrowStatus` at the boundary.
+ */
+export type RawEscrow = Omit<IEscrow, 'status'> & { status: string };
+
+export type RawEscrowExtended = Omit<IEscrowExtended, 'status'> & {
+  status: string;
+};
+
+export type RawEscrowResponse = Omit<IEscrowResponse, 'escrows'> & {
+  escrows: RawEscrow[];
+};
+
 export interface IEscrowFilters {
   status?: string;
   search?: string;
@@ -129,19 +155,30 @@ export interface IEscrowFilters {
   maxAmount?: string;
   fromDate?: string;
   toDate?: string;
+  walletAddress?: string;
 }
 
 export interface IEscrowEventResponse {
   events: IEscrowEvent[];
   hasNextPage: boolean;
   totalCount: number;
+  page: number;
+  limit: number;
 }
 
 export interface IEscrowEventFilters {
   escrowId?: string;
-  eventType?: string;
+  eventType?: EscrowEventType;
   page?: number;
   limit?: number;
+  actorId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sortBy?: "createdAt" | "eventType" | "cursor";
+  sortOrder?: "ASC" | "DESC";
+  cursor?: string;
+  after?: string;
+  before?: string;
 }
 
 // Dispute related interfaces

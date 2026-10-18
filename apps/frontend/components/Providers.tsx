@@ -4,6 +4,11 @@ import React, { useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastProvider } from '@/app/contexts/ToastProvider';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { WebSocketProvider } from '@/app/contexts/WebSocketContext';
+import { WalletProvider } from '@/app/contexts/WalletContext';
+import { WalletSessionCoordinator } from '@/components/WalletSessionCoordinator';
+import { CurrencyProvider } from '@/context/CurrencyContext';
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({
@@ -19,7 +24,16 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <ToastProvider>
-          {children}
+          <ErrorBoundary>
+            <WalletProvider>
+              <WalletSessionCoordinator />
+              <WebSocketProvider>
+                <CurrencyProvider>
+                  {children}
+                </CurrencyProvider>
+              </WebSocketProvider>
+            </WalletProvider>
+          </ErrorBoundary>
         </ToastProvider>
       </ThemeProvider>
     </QueryClientProvider>

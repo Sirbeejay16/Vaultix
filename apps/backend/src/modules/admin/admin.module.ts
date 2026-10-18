@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { AdminController } from './admin.controller';
@@ -9,6 +9,7 @@ import { Party } from '../escrow/entities/party.entity';
 import { EscrowEvent } from '../escrow/entities/escrow-event.entity';
 import { AuthModule } from '../auth/auth.module';
 import { EscrowModule } from '../escrow/escrow.module';
+import { KycModule } from '../kyc/kyc.module';
 import { ConsistencyCheckerService } from './services/consistency-checker.service';
 import { AdminEscrowConsistencyController } from './controllers/admin-escrow-consistency.controller';
 import { AdminAuditLog } from './entities/admin-audit-log.entity';
@@ -16,6 +17,13 @@ import { AdminAuditLogService } from './services/admin-audit-log.service';
 import { AnalyticsService } from './services/analytics.service';
 import { AnalyticsController } from './controllers/analytics.controller';
 import { Dispute } from '../escrow/entities/dispute.entity';
+import { WebhookModule } from '../webhook/webhook.module';
+import { AdminWebhookController } from './controllers/admin-webhook.controller';
+import { AdminKycController } from './controllers/admin-kyc.controller';
+import { AdminEmailPreviewController } from './controllers/admin-email-preview.controller';
+import { EmailModule } from '../../email/email.module';
+import { EscrowChainId } from '../escrow/entities/escrow-chain-id.entity';
+import { ConsistencyCheckerScheduler } from './services/consistency-checker.scheduler';
 
 @Module({
   imports: [
@@ -27,20 +35,28 @@ import { Dispute } from '../escrow/entities/dispute.entity';
       EscrowEvent,
       AdminAuditLog,
       Dispute,
+      EscrowChainId,
     ]),
-    EscrowModule,
+    forwardRef(() => EscrowModule),
+    KycModule,
+    EmailModule,
+    forwardRef(() => WebhookModule),
   ],
   controllers: [
     AdminController,
     AdminEscrowConsistencyController,
     AnalyticsController,
+    AdminWebhookController,
+    AdminKycController,
+    AdminEmailPreviewController,
   ],
   providers: [
     AdminService,
     ConsistencyCheckerService,
+    ConsistencyCheckerScheduler,
     AdminAuditLogService,
     AnalyticsService,
   ],
-  exports: [AdminService, ConsistencyCheckerService],
+  exports: [AdminService, ConsistencyCheckerService, AdminAuditLogService],
 })
 export class AdminModule {}

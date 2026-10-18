@@ -4,9 +4,24 @@ import {
   IEscrowFilters,
   IEscrowEvent,
   IEscrowEventResponse,
-  IEscrowEventFilters
+  IEscrowEventFilters,
+  RawEscrow,
+  RawEscrowResponse
 } from '@/types/escrow';
 import { apiClient } from '@/lib/api-client';
+import {
+  normalizeEscrowStatus,
+  toBackendEscrowStatus,
+  CanonicalEscrowStatus,
+} from '@/utils/escrowStatus';
+
+/**
+ * Applies the canonical status normalizer to a single wire-shaped escrow.
+ * This is the one place API status values become typed.
+ */
+function withNormalizedStatus(escrow: RawEscrow): IEscrow {
+  return { ...escrow, status: normalizeEscrowStatus(escrow.status) };
+}
 
 /**
  * Real EscrowService - connects to backend API
@@ -17,7 +32,15 @@ export class EscrowService {
     const params = new URLSearchParams();
     
     if (filters.status && filters.status !== 'all') {
-      params.set('status', filters.status);
+      // Accept either a canonical status or a raw backend value, and always
+      // send the backend wire value. An unknown status has no counterpart and
+      // is omitted rather than sent as a filter the backend would reject.
+      const wireStatus = toBackendEscrowStatus(
+        normalizeEscrowStatus(filters.status)
+      );
+      if (wireStatus) {
+        params.set('status', wireStatus);
+      }
     }
     if (filters.search) {
       params.set('search', filters.search);
@@ -34,33 +57,52 @@ export class EscrowService {
     if (filters.sortOrder) {
       params.set('sortOrder', filters.sortOrder);
     }
+    if (filters.walletAddress) {
+      params.set('walletAddress', filters.walletAddress);
+    }
 
     const queryString = params.toString();
-    return apiClient.get<IEscrowResponse>(`/escrows${queryString ? `?${queryString}` : ''}`);
+    const response = await apiClient.get<RawEscrowResponse>(
+      `/escrows${queryString ? `?${queryString}` : ''}`
+    );
+    return {
+      ...response,
+      escrows: response.escrows.map(withNormalizedStatus),
+    };
   }
 
   static async getEscrowById(id: string): Promise<IEscrow> {
-    return apiClient.get<IEscrow>(`/escrows/${id}`);
+    return withNormalizedStatus(
+      await apiClient.get<RawEscrow>(`/escrows/${id}`)
+    );
   }
 
   static async createEscrow(data: any): Promise<IEscrow> {
-    return apiClient.post<IEscrow>('/escrows', data);
+    return withNormalizedStatus(await apiClient.post<RawEscrow>('/escrows', data));
   }
 
   static async fundEscrow(id: string, data: { amount: string; asset: string }): Promise<IEscrow> {
-    return apiClient.post<IEscrow>(`/escrows/${id}/fund`, data);
+    return withNormalizedStatus(
+      await apiClient.post<RawEscrow>(`/escrows/${id}/fund`, data)
+    );
   }
 
   static async releaseFunds(id: string): Promise<IEscrow> {
-    return apiClient.post<IEscrow>(`/escrows/${id}/release`);
+    return withNormalizedStatus(
+      await apiClient.post<RawEscrow>(`/escrows/${id}/release`)
+    );
   }
 
   static async cancelEscrow(id: string, reason?: string): Promise<IEscrow> {
-    return apiClient.post<IEscrow>(`/escrows/${id}/cancel`, { reason });
+    return withNormalizedStatus(
+      await apiClient.post<RawEscrow>(`/escrows/${id}/cancel`, { reason })
+    );
   }
 
   static async fileDispute(id: string, data: { reason: string; description?: string }): Promise<IEscrow> {
-    return apiClient.post<IEscrow>(`/escrows/${id}/dispute`, data);
+    return withNormalizedStatus(
+      await apiClient.post<RawEscrow>(`/escrows/${id}/dispute`, data)
+    );
   }
 
   static async fulfillCondition(
@@ -68,49 +110,97 @@ export class EscrowService {
     conditionId: string, 
     data: { notes?: string; evidence?: string }
   ): Promise<IEscrow> {
-    return apiClient.post<IEscrow>(
-      `/escrows/${escrowId}/conditions/${conditionId}/fulfill`,
-      data
+    return withNormalizedStatus(
+      await apiClient.post<RawEscrow>(
+        `/escrows/${escrowId}/conditions/${conditionId}/fulfill`,
+        data
+      )
     );
   }
 
   static async confirmCondition(escrowId: string, conditionId: string): Promise<IEscrow> {
-    return apiClient.post<IEscrow>(
-      `/escrows/${escrowId}/conditions/${conditionId}/confirm`
+    return withNormalizedStatus(
+      await apiClient.post<RawEscrow>(
+        `/escrows/${escrowId}/conditions/${conditionId}/confirm`
+      )
     );
   }
 
   static async getEvents(
-    escrowId: string, 
-    filters: IEscrowEventFilters = {}
+    filters: IEscrowEventFilters = {},
   ): Promise<IEscrowEventResponse> {
     const params = new URLSearchParams();
-    
-    if (filters.page) {
+
+    if (filters.page !== undefined) {
       params.set('page', String(filters.page));
     }
-    if (filters.limit) {
+    if (filters.limit !== undefined) {
       params.set('limit', String(filters.limit));
     }
     if (filters.eventType && filters.eventType !== 'ALL') {
       params.set('eventType', filters.eventType);
     }
+    if (filters.escrowId) {
+      params.set('escrowId', filters.escrowId);
+    }
+    if (filters.actorId) {
+      params.set('actorId', filters.actorId);
+    }
+    if (filters.dateFrom) {
+      params.set('dateFrom', filters.dateFrom);
+    }
+    if (filters.dateTo) {
+      params.set('dateTo', filters.dateTo);
+    }
+    if (filters.sortBy) {
+      params.set('sortBy', filters.sortBy);
+    }
+    if (filters.sortOrder) {
+      params.set('sortOrder', filters.sortOrder);
+    }
+    if (filters.cursor) {
+      params.set('cursor', filters.cursor);
+    }
+    if (filters.after) {
+      params.set('after', filters.after);
+    }
+    if (filters.before) {
+      params.set('before', filters.before);
+    }
 
     const queryString = params.toString();
-    return apiClient.get<IEscrowEventResponse>(
-      `/escrows/${escrowId}/events${queryString ? `?${queryString}` : ''}`
-    );
+    const endpoint = filters.escrowId
+      ? `/escrows/${encodeURIComponent(filters.escrowId)}/events`
+      : '/events';
+    const response = await apiClient.get<{
+      data: IEscrowEvent[];
+      total: number;
+      page: number;
+      limit: number;
+    }>(`${endpoint}${queryString ? `?${queryString}` : ''}`);
+
+    return {
+      events: response.data,
+      totalCount: response.total,
+      page: response.page,
+      limit: response.limit,
+      hasNextPage: response.page * response.limit < response.total,
+    };
   }
 
   static async updateEscrowStatus(id: string, status: IEscrow['status']): Promise<IEscrow> {
-    // This would depend on your backend API structure
-    // You might need separate endpoints for each status transition
+    // Generic status transitions are only supported where a dedicated endpoint
+    // exists. Funding, release and cancel have their own endpoints; anything
+    // else (notably "disputed") must go through its dedicated action instead of
+    // a fabricated status mutation.
     switch (status) {
-      case 'funded':
-        return this.fundEscrow(id, { amount: '0', asset: 'XLM' });
-      case 'released':
+      // 'released' normalizes to COMPLETED, so the canonical constant covers
+      // both spellings. FUNDED is deliberately absent: funding has its own
+      // endpoint that takes a real amount, and routing it through here would
+      // fabricate a zero-value deposit.
+      case CanonicalEscrowStatus.COMPLETED:
         return this.releaseFunds(id);
-      case 'cancelled':
+      case CanonicalEscrowStatus.CANCELLED:
         return this.cancelEscrow(id);
       default:
         throw new Error(`Status transition to ${status} not supported`);

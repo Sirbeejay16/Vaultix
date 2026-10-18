@@ -6,7 +6,16 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { UserRole } from './user-role.enum';
+import { DATETIME_COLUMN_TYPE } from '../../../utils/database-column-types';
 export { UserRole } from './user-role.enum';
+
+export enum KycStatus {
+  NOT_STARTED = 'not_started',
+  PENDING = 'pending',
+  VERIFIED = 'verified',
+  REJECTED = 'rejected',
+  EXPIRED = 'expired',
+}
 
 @Entity('users')
 export class User {
@@ -16,8 +25,11 @@ export class User {
   @Column({ unique: true })
   walletAddress!: string;
 
-  @Column({ nullable: true })
-  nonce?: string;
+  @Column({ type: 'varchar', nullable: true })
+  nonce?: string | null;
+
+  @Column({ type: DATETIME_COLUMN_TYPE, nullable: true })
+  nonceExpiresAt?: Date | null;
 
   @Column({ default: true })
   isActive!: boolean;
@@ -28,6 +40,37 @@ export class User {
     default: UserRole.USER,
   })
   role!: UserRole;
+
+  // New profile fields
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  displayName?: string;
+
+  @Column({ type: 'varchar', length: 255, nullable: true, unique: true })
+  email?: string;
+
+  @Column({ default: false })
+  emailVerified!: boolean;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  avatarUrl?: string;
+
+  @Column({ type: 'text', nullable: true })
+  bio?: string;
+
+  @Column({ type: 'varchar', length: 20, default: 'XLM' })
+  preferredAsset!: string;
+
+  @Column({
+    type: 'varchar',
+    default: KycStatus.NOT_STARTED,
+  })
+  kycStatus!: KycStatus;
+
+  @Column({ type: 'varchar', nullable: true })
+  kycRejectionReason?: string;
+
+  @Column({ type: DATETIME_COLUMN_TYPE, nullable: true })
+  kycVerifiedAt?: Date;
 
   // @ManyToOne(() => Organization, (org: Organization) => org.users, { nullable: false })
   // @JoinColumn({ name: 'org_id' })

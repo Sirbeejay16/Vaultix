@@ -15,3 +15,35 @@ npm-debug.log*
 *.sln
 *.sw?
 .opencode
+# Node.js
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Editor directories and files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Vaultix Specific Secrets
+wallet_secrets.json
+auth_tokens.json
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+
+# Dependency audit reports (see scripts/audit.sh)
+audit-reports/
+

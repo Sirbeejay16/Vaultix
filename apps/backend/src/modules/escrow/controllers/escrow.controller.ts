@@ -10,14 +10,19 @@ import {
   Request,
   Req,
   ForbiddenException,
+  NotFoundException,
   UseInterceptors,
-  UploadedFile,
+  UploadedFiles,
   ParseFilePipe,
   MaxFileSizeValidator,
   FileTypeValidator,
+  Res,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { ListEscrowsCursorDto } from '../dto/list-escrows-cursor.dto';
+import { IdempotencyInterceptor } from '../../../common/idempotency/idempotency.interceptor';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import { Response } from 'express';
 import { Request as ExpressRequest } from 'express';
 import {
   ApiBearerAuth,
@@ -26,10 +31,19 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { AuthGuard } from '../../auth/middleware/auth.guard';
+import { AdminGuard } from '../../auth/middleware/admin.guard';
+import { KycGuard } from '../../kyc/guards/kyc.guard';
 import { EscrowAccessGuard } from '../guards/escrow-access.guard';
 import { EscrowExpireGuard } from '../guards/escrow-expire.guard';
 import { EscrowService } from '../services/escrow.service';
+import { EscrowCreationService } from '../services/escrow-creation.service';
+import { EscrowEvidenceService } from '../services/escrow-evidence.service';
+import { IpfsService } from '../../ipfs/ipfs.service';
 import { CreateEscrowDto } from '../dto/create-escrow.dto';
+import {
+  PrepareEscrowCreationDto,
+  SubmitEscrowCreationDto,
+} from '../dto/create-escrow-intent.dto';
 import { UpdateEscrowDto } from '../dto/update-escrow.dto';
 import { ListEscrowsDto } from '../dto/list-escrows.dto';
 import { ListEventsDto } from '../dto/list-events.dto';
@@ -43,6 +57,12 @@ import { FileDisputeDto, ResolveDisputeDto } from '../dto/dispute.dto';
 import { FundEscrowDto } from '../dto/fund-escrow.dto';
 import { ExpireEscrowDto } from '../dto/expire-escrow.dto';
 import { ProposeMilestoneChangeDto } from '../dto/milestone-change.dto';
+import {
+  EvidenceFileMetadataDto,
+  UploadEvidenceResponseDto,
+} from '../dto/upload-evidence.dto';
+import { PrepareIntentDto } from '../dto/prepare-intent.dto';
+import { SorobanIntentService } from '../services/soroban-intent.service';
 
 interface AuthenticatedRequest extends ExpressRequest {
   user: { sub?: string; userId?: string; walletAddress: string };
@@ -53,7 +73,13 @@ interface AuthenticatedRequest extends ExpressRequest {
 @ApiBearerAuth()
 @UseGuards(ThrottlerGuard, AuthGuard)
 export class EscrowController {
-  constructor(private readonly escrowService: EscrowService) {}
+  constructor(
+    private readonly escrowService: EscrowService,
+    private readonly creationService: EscrowCreationService,
+    private readonly evidenceService: EscrowEvidenceService,
+    private readonly ipfsService: IpfsService,
+    private readonly sorobanIntentService: SorobanIntentService,
+  ) {}
 
   private getAuthenticatedUserId(req: AuthenticatedRequest): string {
     const userId = req.user.sub ?? req.user.userId;
@@ -65,6 +91,8 @@ export class EscrowController {
   }
 
   @Post()
+  @UseGuards(KycGuard)
+  @UseInterceptors(IdempotencyInterceptor)
   async create(
     @Body() dto: CreateEscrowDto,
     @Request() req: AuthenticatedRequest,
@@ -74,6 +102,34 @@ export class EscrowController {
     return this.escrowService.create(dto, userId, ipAddress);
   }
 
+  @Post('creation-intents')
+  @UseGuards(KycGuard)
+  async prepareCreation(
+    @Body() dto: PrepareEscrowCreationDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.creationService.prepare(
+      dto,
+      this.getAuthenticatedUserId(req),
+      req.user.walletAddress,
+    );
+  }
+
+  @Post('creation-intents/:intentId/submit')
+  @UseGuards(KycGuard)
+  async submitCreation(
+    @Param('intentId') intentId: string,
+    @Body() dto: SubmitEscrowCreationDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.creationService.submit(
+      intentId,
+      dto.signedXdr,
+      this.getAuthenticatedUserId(req),
+      req.user.walletAddress,
+    );
+  }
+
   @Get()
   async findAll(
     @Query() query: ListEscrowsDto,
@@ -81,6 +137,22 @@ export class EscrowController {
   ) {
     const userId = this.getAuthenticatedUserId(req);
     return this.escrowService.findAll(userId, query);
+  }
+
+  @Get('cursor')
+  @ApiOperation({
+    summary: 'List escrows with cursor pagination',
+    description:
+      'Returns { items, nextCursor }. Pass nextCursor back as `cursor` for the next page. Sorted by createdAt then id.',
+  })
+  async findAllCursor(
+    @Query() query: ListEscrowsCursorDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.escrowService.findAllCursor(
+      this.getAuthenticatedUserId(req),
+      query,
+    );
   }
 
   @Get('overview')
@@ -94,6 +166,17 @@ export class EscrowController {
   ) {
     const userId = this.getAuthenticatedUserId(req);
     return this.escrowService.findOverview(userId, query);
+  }
+
+  @Get('pending-invitations')
+  @ApiOperation({
+    summary:
+      'List escrows where the authenticated user has a pending party invitation',
+  })
+  async getPendingInvitations(@Request() req: AuthenticatedRequest) {
+    return this.escrowService.getPendingInvitations(
+      this.getAuthenticatedUserId(req),
+    );
   }
 
   @Get(':id')
@@ -126,6 +209,35 @@ export class EscrowController {
     return this.escrowService.cancel(id, dto, userId, ipAddress);
   }
 
+  /**
+   * POST /escrows/:id/prepare-intent
+   * Simulates and assembles a Soroban transaction and freezes it into a
+   * short-lived, user-bound intent. The caller signs `unsignedXdr` in their
+   * wallet; the server never sees a secret key.
+   */
+  @Post(':id/prepare-intent')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({
+    summary: 'Prepare a wallet-signable Soroban transaction for an escrow',
+  })
+  async prepareIntent(
+    @Param('id') id: string,
+    @Body() dto: PrepareIntentDto,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    const userId = this.getAuthenticatedUserId(req);
+    const escrow = await this.escrowService.findOne(id);
+    if (!escrow) {
+      throw new NotFoundException('Escrow not found');
+    }
+    return this.sorobanIntentService.prepare(
+      escrow,
+      userId,
+      req.user.walletAddress,
+      dto,
+    );
+  }
+
   @Post(':id/expire')
   @UseGuards(EscrowExpireGuard)
   async expire(
@@ -151,6 +263,7 @@ export class EscrowController {
   }
 
   @Post(':id/fund')
+  @UseInterceptors(IdempotencyInterceptor)
   @UseGuards(EscrowAccessGuard)
   async fund(
     @Param('id') id: string,
@@ -168,6 +281,7 @@ export class EscrowController {
   }
 
   @Post(':id/release')
+  @UseInterceptors(IdempotencyInterceptor)
   @UseGuards(AuthGuard)
   async releaseEscrow(
     @Param('id') id: string,
@@ -254,12 +368,62 @@ export class EscrowController {
     );
   }
 
+  @Post(':id/conditions/:conditionId/release')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({ summary: 'Release a specific milestone payment' })
+  async releaseMilestone(
+    @Param('id') escrowId: string,
+    @Param('conditionId') conditionId: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.escrowService.releaseMilestone(
+      escrowId,
+      conditionId,
+      this.getAuthenticatedUserId(req),
+    );
+  }
+
+  @Post(':id/parties/:partyId/accept')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({ summary: 'Accept a party invitation for an escrow' })
+  async acceptPartyInvitation(
+    @Param('id') escrowId: string,
+    @Param('partyId') partyId: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    const ipAddress = req.ip || req.socket?.remoteAddress;
+    return this.escrowService.acceptPartyInvitation(
+      escrowId,
+      partyId,
+      this.getAuthenticatedUserId(req),
+      ipAddress,
+    );
+  }
+
+  @Post(':id/parties/:partyId/reject')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({ summary: 'Reject a party invitation for an escrow' })
+  async rejectPartyInvitation(
+    @Param('id') escrowId: string,
+    @Param('partyId') partyId: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    const ipAddress = req.ip || req.socket?.remoteAddress;
+    return this.escrowService.rejectPartyInvitation(
+      escrowId,
+      partyId,
+      this.getAuthenticatedUserId(req),
+      ipAddress,
+    );
+  }
+
   /**
    * POST /escrows/:id/dispute
    * File a dispute against an active escrow. Only a buyer or seller party may call this.
    * Transitions the escrow from ACTIVE → DISPUTED and freezes fund release.
    */
   @Post(':id/dispute')
+  @UseInterceptors(IdempotencyInterceptor)
   @UseGuards(EscrowAccessGuard)
   async fileDispute(
     @Param('id') id: string,
@@ -305,25 +469,105 @@ export class EscrowController {
       ipAddress,
     );
   }
+  /**
+   * POST /escrows/:id/evidence
+   * Upload evidence files for a dispute. Accepts up to 5 files, max 10MB each.
+   * Only dispute parties may call this.
+   */
   @Post(':id/evidence')
   @UseGuards(EscrowAccessGuard)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FilesInterceptor('files', 5, {
+      limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+    }),
+  )
+  @ApiOperation({ summary: 'Upload evidence files for a dispute' })
+  @ApiOkResponse({ type: UploadEvidenceResponseDto })
   async uploadEvidence(
     @Param('id') id: string,
     @Request() req: AuthenticatedRequest,
-    @UploadedFile(
+    @UploadedFiles(
       new ParseFilePipe({
         validators: [
-          new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }), // 10MB
+          new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }), // 10MB per file
           new FileTypeValidator({
-            fileType: /(jpg|jpeg|png|pdf|txt|doc|docx)$/,
+            fileType: /(pdf|png|jpg|jpeg|doc|docx)$/,
           }),
         ],
       }),
     )
-    file: { buffer: Buffer; originalname: string },
-  ) {
+    files: Express.Multer.File[],
+  ): Promise<UploadEvidenceResponseDto> {
     const userId = this.getAuthenticatedUserId(req);
-    return this.escrowService.uploadEvidence(id, userId, file);
+    return this.evidenceService.uploadEvidence(id, files, userId);
+  }
+
+  /**
+   * GET /escrows/:id/evidence
+   * Get all evidence file metadata for a dispute. Accessible to dispute parties.
+   */
+  @Get(':id/evidence')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({ summary: 'Get evidence files for a dispute' })
+  @ApiOkResponse({ type: [EvidenceFileMetadataDto] })
+  async getEvidence(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ): Promise<EvidenceFileMetadataDto[]> {
+    const userId = this.getAuthenticatedUserId(req);
+    return this.evidenceService.getEvidence(id, userId);
+  }
+
+  /**
+   * GET /escrows/:id/evidence/:cid
+   * Stream evidence file from IPFS by CID. Accessible to dispute parties.
+   */
+  @Get(':id/evidence/:cid')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({ summary: 'Stream evidence file from IPFS' })
+  async getEvidenceFile(
+    @Param('id') id: string,
+    @Param('cid') cid: string,
+    @Request() req: AuthenticatedRequest,
+    @Res() res: Response,
+  ): Promise<void> {
+    const userId = this.getAuthenticatedUserId(req);
+    await this.evidenceService.getEvidenceFile(id, cid, userId, res);
+  }
+
+  /**
+   * GET /escrows/:id/metadata
+   * Get escrow metadata from IPFS
+   */
+  @Get(':id/metadata')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({ summary: 'Get escrow metadata from IPFS' })
+  async getEscrowMetadata(@Param('id') id: string) {
+    return this.ipfsService.getMetadata(id);
+  }
+
+  /**
+   * GET /escrows/:id/metadata/verify
+   * Verify escrow metadata integrity
+   */
+  @Get(':id/metadata/verify')
+  @UseGuards(EscrowAccessGuard)
+  @ApiOperation({ summary: 'Verify escrow metadata integrity' })
+  async verifyEscrowMetadata(@Param('id') id: string) {
+    return this.ipfsService.verifyMetadata(id);
+  }
+
+  /**
+   * POST /escrows/:id/metadata/pin
+   * Pin escrow metadata to IPFS (admin only)
+   */
+  @Post(':id/metadata/pin')
+  @UseGuards(EscrowAccessGuard, AdminGuard)
+  @ApiOperation({ summary: 'Pin escrow metadata to IPFS (admin only)' })
+  async pinEscrowMetadata(
+    @Param('id') id: string,
+    @Body() metadata?: Record<string, unknown>,
+  ) {
+    return this.ipfsService.pinMetadata(id, metadata || {});
   }
 }

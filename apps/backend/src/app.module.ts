@@ -1,8 +1,11 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { validateJwtSecret } from './modules/auth/services/jwt-validation.util';
+import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import { JwtModule } from '@nestjs/jwt';
+import { LoggerModule } from 'nestjs-pino';
+import * as crypto from 'crypto';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './modules/auth/auth.module';
@@ -11,7 +14,10 @@ import { StellarModule } from './modules/stellar/stellar.module';
 import { WebhookModule } from './modules/webhook/webhook.module';
 import { User } from './modules/user/entities/user.entity';
 import { RefreshToken } from './modules/user/entities/refresh-token.entity';
+import { EmailVerification } from './modules/user/entities/email-verification.entity';
 import { Escrow } from './modules/escrow/entities/escrow.entity';
+import { EscrowCreationIntent } from './modules/escrow/entities/escrow-creation-intent.entity';
+import { SorobanTxIntent } from './modules/escrow/entities/soroban-tx-intent.entity';
 import { Party } from './modules/escrow/entities/party.entity';
 import { Condition } from './modules/escrow/entities/condition.entity';
 import { EscrowEvent } from './modules/escrow/entities/escrow-event.entity';
@@ -19,56 +25,115 @@ import { Dispute } from './modules/escrow/entities/dispute.entity';
 import { NotificationsModule } from './notifications/notifications.module';
 import { EscrowModule } from './modules/escrow/escrow.module';
 import { ApiKeyModule } from './api-key/api-key.module';
+import { IdempotencyKey } from './common/idempotency/idempotency-key.entity';
 import { Notification } from './notifications/entities/notification.entity';
 import { NotificationPreference } from './notifications/entities/notification-preference.entity';
 import { ApiKey } from './api-key/entities/api-key.entity';
 import { AdminAuditLog } from './modules/admin/entities/admin-audit-log.entity';
 import { Webhook } from './modules/webhook/webhook.entity';
+import { WebhookDelivery } from './modules/webhook/entities/webhook-delivery.entity';
+import { WebhookDeadLetter } from './modules/webhook/entities/webhook-dead-letter.entity';
 import { StellarEvent } from './modules/stellar/entities/stellar-event.entity';
 import { AdminModule } from './modules/admin/admin.module';
 import { StellarEventModule } from './modules/stellar/stellar-event.module';
 import { AssetsModule } from './modules/assets/assets.module';
 import { AllowedAsset } from './modules/assets/entities/allowed-asset.entity';
 import { IpfsModule } from './modules/ipfs/ipfs.module';
-import { EscrowGateway } from './gateways/escrow.gateway';
+import { HealthModule } from './modules/health/health.module';
+import { AppVersionModule } from './app-version/app-version.module';
+import { EmailModule } from './email/email.module';
+import { EmailOutbox } from './email/entities/email-outbox.entity';
+import { KycModule } from './modules/kyc/kyc.module';
+import { KycVerification } from './modules/kyc/entities/kyc-verification.entity';
+import { EscrowChainId } from './modules/escrow/entities/escrow-chain-id.entity';
 import stellarConfig from './config/stellar.config';
 import ipfsConfig from './config/ipfs.config';
+import emailConfig from './config/email.config';
+import webhookConfig from './config/webhook.config';
+import databaseConfig, {
+  buildDatabaseConnectionOptions,
+  getDatabaseType,
+} from './config/database.config';
+import { ApiV2Module } from './modules/versioning/api-v2.module';
+import { BackupModule } from './modules/backup/backup.module';
+import { BackupRecord } from './modules/backup/entities/backup-record.entity';
 
 @Module({
   imports: [
+    LoggerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        return {
+          pinoHttp: {
+            level: config.get('LOG_LEVEL', 'info'),
+            genReqId: (req) => {
+              return req.headers['x-request-id'] || crypto.randomUUID();
+            },
+            transport:
+              config.get('NODE_ENV') !== 'production'
+                ? {
+                    target: 'pino-pretty',
+                    options: {
+                      singleLine: true,
+                    },
+                  }
+                : undefined,
+          },
+        };
+      },
+    }),
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [stellarConfig, ipfsConfig],
+      load: [
+        stellarConfig,
+        ipfsConfig,
+        emailConfig,
+        webhookConfig,
+        databaseConfig,
+      ],
     }),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        type: 'sqlite',
-        database: configService.get<string>(
-          'DATABASE_PATH',
-          './data/vaultix.db',
-        ),
-        entities: [
-          User,
-          RefreshToken,
-          Escrow,
-          Party,
-          Condition,
-          EscrowEvent,
-          Dispute,
-          Notification,
-          NotificationPreference,
-          ApiKey,
-          AdminAuditLog,
-          Webhook,
-          StellarEvent,
-          AllowedAsset,
-        ],
-        synchronize: process.env.NODE_ENV === 'test',
-        migrations: [__dirname + '/migrations/*.ts'],
-        migrationsRun: process.env.NODE_ENV !== 'test',
-      }),
+      useFactory: (configService: ConfigService): TypeOrmModuleOptions =>
+        ({
+          ...buildDatabaseConnectionOptions(),
+          entities: [
+            User,
+            RefreshToken,
+            EmailVerification,
+            Escrow,
+            EscrowCreationIntent,
+            Party,
+            Condition,
+            EscrowEvent,
+            Dispute,
+            Notification,
+            NotificationPreference,
+            ApiKey,
+            AdminAuditLog,
+            Webhook,
+            WebhookDelivery,
+            WebhookDeadLetter,
+            StellarEvent,
+            AllowedAsset,
+            SorobanTxIntent,
+            EmailOutbox,
+            BackupRecord,
+            KycVerification,
+            EscrowChainId,
+            IdempotencyKey,
+          ],
+          synchronize: configService.get('NODE_ENV') === 'test',
+          migrations: [
+            __dirname +
+              (getDatabaseType() === 'postgres'
+                ? '/migrations-postgres/*.ts'
+                : '/migrations/*.ts'),
+          ],
+          migrationsRun: configService.get('NODE_ENV') !== 'test',
+        }) as TypeOrmModuleOptions,
       inject: [ConfigService],
     }),
     AuthModule,
@@ -82,20 +147,21 @@ import ipfsConfig from './config/ipfs.config';
     forwardRef(() => StellarEventModule),
     AssetsModule,
     IpfsModule,
+    HealthModule,
+    AppVersionModule,
+    EmailModule,
+    ApiV2Module,
+    BackupModule,
+    KycModule,
     JwtModule.registerAsync({
       useFactory: (configService: ConfigService) => ({
-        secret:
-          configService.get<string>('JWT_SECRET') ||
-          'your-secret-key-change-in-production',
+        secret: validateJwtSecret(configService.get<string>('JWT_SECRET')),
         signOptions: { expiresIn: '15m' },
       }),
       inject: [ConfigService],
     }),
   ],
   controllers: [AppController],
-  providers: [
-    AppService,
-    EscrowGateway, // WebSocket Gateway for real-time updates
-  ],
+  providers: [AppService],
 })
 export class AppModule {}

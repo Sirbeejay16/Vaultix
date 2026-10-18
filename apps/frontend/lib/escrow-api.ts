@@ -1,54 +1,71 @@
-import { ICondition, IDispute, IEscrowExtended } from "@/types/escrow";
-
-const apiBaseUrl =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
-
-const buildApiUrl = (path: string) => {
-  if (apiBaseUrl) {
-    return `${apiBaseUrl}${path}`;
-  }
-
-  return `/api${path}`;
-};
-
-const readErrorMessage = async (response: Response) => {
-  const fallback = `Request failed with status ${response.status}`;
-
-  try {
-    const data = (await response.json()) as { message?: string | string[] };
-
-    if (Array.isArray(data.message)) {
-      return data.message.join(", ");
-    }
-
-    return data.message ?? fallback;
-  } catch {
-    return fallback;
-  }
-};
+import {
+  ICondition,
+  IDispute,
+  IEscrowExtended,
+  IParty,
+} from "@/types/escrow";
+import type { RawEscrowExtended } from "@/types/escrow";
+import { apiClient } from "./api-client";
+import {
+  CanonicalEscrowStatus,
+  normalizeEscrowStatus,
+} from "@/utils/escrowStatus";
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(buildApiUrl(path), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response));
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return (await response.json()) as T;
+  return apiClient.request<T>(path, init);
 };
 
-export const fetchEscrow = (id: string) =>
-  request<IEscrowExtended>(`/escrows/${id}`);
+/**
+ * Event payloads embed a snapshot of the escrow, including its status. Apply the
+ * same boundary normalization so consumers never compare raw wire values.
+ */
+function withNormalizedEventStatuses<T extends { escrow?: { status: string } }>(
+  response: T,
+): T {
+  if (!response.escrow) return response;
+  return {
+    ...response,
+    escrow: { ...response.escrow, status: normalizeEscrowStatus(response.escrow.status) },
+  };
+}
+
+export const fetchEscrow = async (id: string): Promise<IEscrowExtended> => {
+  const escrow = await request<RawEscrowExtended>(`/escrows/${id}`);
+  return { ...escrow, status: normalizeEscrowStatus(escrow.status) };
+};
+
+export interface PendingPartyInvitation {
+  escrow: IEscrowExtended;
+  party: IParty;
+}
+
+type PendingInvitationResponse = Omit<IParty, "status"> & {
+  status: string;
+  escrow: RawEscrowExtended;
+};
+
+function isPendingInvitation(
+  party: PendingInvitationResponse,
+): party is PendingInvitationResponse & { status: IParty["status"] } {
+  return party.status.toUpperCase() === "PENDING";
+}
+
+export const fetchPendingPartyInvitations =
+  async (): Promise<PendingPartyInvitation[]> => {
+    const response = await request<PendingInvitationResponse[]>(
+      "/escrows/pending-invitations",
+    );
+
+    return response
+      .filter(isPendingInvitation)
+      .map(({ escrow, ...party }) => ({
+        escrow: {
+          ...escrow,
+          status: normalizeEscrowStatus(escrow.status),
+        },
+        party,
+      }));
+  };
 
 export const acceptPartyInvitation = (escrowId: string, partyId: string) =>
   request(`/escrows/${escrowId}/parties/${partyId}/accept`, {
@@ -87,31 +104,7 @@ export const uploadEvidence = async (
 ): Promise<{ cid: string; url: string }> => {
   const formData = new FormData();
   formData.append("file", file);
-
-  const token =
-    typeof window !== "undefined"
-      ? localStorage.getItem("vaultix_token")
-      : null;
-
-  const response = await fetch(
-    `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000"}/escrows/${escrowId}/evidence`,
-    {
-      method: "POST",
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: formData,
-    },
-  );
-
-  if (!response.ok) {
-    const error = await response
-      .json()
-      .catch(() => ({ message: "Upload failed" }));
-    throw new Error(error.message || `HTTP ${response.status}`);
-  }
-
-  return response.json();
+  return apiClient.post(`/escrows/${escrowId}/evidence`, formData);
 };
 
 export const fileDispute = (
@@ -174,6 +167,32 @@ export const revokeApiKey = (id: string): Promise<IApiKey> =>
     method: "DELETE",
   });
 
+// Per-escrow events (timeline)
+export interface IEscrowEventsResponse {
+  data: IEventResponse[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export const fetchEscrowEvents = async (
+  escrowId: string,
+  params: { page?: number; limit?: number; sortOrder?: "ASC" | "DESC" } = {},
+): Promise<IEscrowEventsResponse> => {
+  const qp = new URLSearchParams();
+  if (params.page) qp.set("page", String(params.page));
+  if (params.limit) qp.set("limit", String(params.limit));
+  if (params.sortOrder) qp.set("sortOrder", params.sortOrder);
+  const qs = qp.toString();
+  const response = await request<IEscrowEventsResponse>(
+    `/escrows/${escrowId}/events${qs ? `?${qs}` : ""}`,
+  );
+  return {
+    ...response,
+    data: (response.data ?? []).map(withNormalizedEventStatuses),
+  };
+};
+
 // Global Events / Transaction History
 export interface IEventResponse {
   id: string;
@@ -189,7 +208,9 @@ export interface IEventResponse {
     amount: number;
     assetCode: string;
     assetIssuer?: string;
-    status: string;
+    status: CanonicalEscrowStatus;
+    completedAt?: string;
+    deadline?: string;
   };
   actor?: {
     walletAddress?: string;
@@ -203,7 +224,16 @@ export interface IEventsListResponse {
   limit: number;
 }
 
-export const fetchEvents = (
+export const expireEscrow = (
+  escrowId: string,
+  data?: { reason?: string },
+): Promise<any> =>
+  request(`/escrows/${escrowId}/expire`, {
+    method: "POST",
+    body: data ? JSON.stringify(data) : undefined,
+  });
+
+export const fetchEvents = async (
   params: {
     page?: number;
     limit?: number;
@@ -225,10 +255,14 @@ export const fetchEvents = (
   if (params.sortOrder) queryParams.set("sortOrder", params.sortOrder);
 
   const queryString = queryParams.toString();
-  return request<IEventsListResponse>(
+  const response = await request<IEventsListResponse>(
     `/events${queryString ? `?${queryString}` : ""}`,
     {
       method: "GET",
     },
   );
+  return {
+    ...response,
+    data: (response.data ?? []).map(withNormalizedEventStatuses),
+  };
 };

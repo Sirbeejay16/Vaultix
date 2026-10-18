@@ -1,13 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { IEscrowExtended } from '@/types/escrow';
+import { useCurrency } from "@/context/CurrencyContext";
+import { useFiatPrice } from "@/hooks/useFiatPrice";
+import { CanonicalEscrowStatus, canTakeFinancialAction, escrowStatusLabel } from "@/utils/escrowStatus";
 
 interface TermsSectionProps {
   escrow: IEscrowExtended;
   userRole: 'creator' | 'counterparty' | 'arbitrator' | null;
 }
 
+const formatFiat = (amount: number, currency: string) => {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  }).format(amount);
+};
+
 const TermsSection: React.FC<TermsSectionProps> = ({ escrow, userRole }) => {
   const [timeLeft, setTimeLeft] = useState('');
+  const { showFiat, currency } = useCurrency();
+  const { prices } = useFiatPrice();
 
   useEffect(() => {
     if (!escrow.expiresAt) return;
@@ -24,6 +36,16 @@ const TermsSection: React.FC<TermsSectionProps> = ({ escrow, userRole }) => {
     return () => clearInterval(t);
   }, [escrow.expiresAt]);
 
+  let fiatDisplay = null;
+  if (showFiat && escrow.asset === 'XLM' && prices[currency]) {
+    const fiatAmount = parseFloat(escrow.amount) * prices[currency];
+    fiatDisplay = (
+      <span className="text-muted-foreground ml-1 font-normal">
+        (~{formatFiat(fiatAmount, currency)})
+      </span>
+    );
+  }
+
   return (
     <div className="bg-card text-card-foreground rounded-xl shadow-sm border border-border p-4 sm:p-6 lg:sticky lg:top-8">
       <h2 className="text-lg sm:text-xl font-semibold text-foreground mb-4">Terms & Actions</h2>
@@ -36,7 +58,7 @@ const TermsSection: React.FC<TermsSectionProps> = ({ escrow, userRole }) => {
             <div className="flex justify-between items-center gap-2">
               <dt className="text-sm text-muted-foreground shrink-0">Amount</dt>
               <dd className="text-sm font-medium text-foreground text-right">
-                {Number(escrow.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} {escrow.asset}
+                {Number(escrow.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} {escrow.asset} {fiatDisplay}
               </dd>
             </div>
             <div className="flex justify-between items-center gap-2">
@@ -45,7 +67,7 @@ const TermsSection: React.FC<TermsSectionProps> = ({ escrow, userRole }) => {
             </div>
             <div className="flex justify-between items-center gap-2">
               <dt className="text-sm text-muted-foreground">Status</dt>
-              <dd className="text-sm font-medium text-foreground capitalize">{escrow.status}</dd>
+              <dd className="text-sm font-medium text-foreground">{escrowStatusLabel(escrow.status)}</dd>
             </div>
             {escrow.expiresAt && (
               <div className="flex justify-between items-start gap-2">
@@ -61,12 +83,16 @@ const TermsSection: React.FC<TermsSectionProps> = ({ escrow, userRole }) => {
 
         {/* Action buttons */}
         <div className="space-y-2.5">
-          {userRole === 'creator' && escrow.status === 'PENDING' && (
+          {userRole === 'creator' &&
+            escrow.status === CanonicalEscrowStatus.CREATED &&
+            canTakeFinancialAction(escrow.status) && (
             <button className="w-full min-h-[44px] px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors cursor-pointer">
               Fund Escrow
             </button>
           )}
-          {userRole === 'counterparty' && escrow.status === 'ACTIVE' && (
+          {userRole === 'counterparty' &&
+            escrow.status === CanonicalEscrowStatus.ACTIVE &&
+            canTakeFinancialAction(escrow.status) && (
             <>
               <button className="w-full min-h-[44px] px-4 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium transition-colors cursor-pointer">
                 Confirm Delivery
@@ -76,7 +102,9 @@ const TermsSection: React.FC<TermsSectionProps> = ({ escrow, userRole }) => {
               </button>
             </>
           )}
-          {(userRole === 'creator' || userRole === 'counterparty') && escrow.status === 'ACTIVE' && (
+          {(userRole === 'creator' || userRole === 'counterparty') &&
+            escrow.status === CanonicalEscrowStatus.ACTIVE &&
+            canTakeFinancialAction(escrow.status) && (
             <button className="w-full min-h-[44px] px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-medium transition-colors cursor-pointer">
               Cancel Escrow
             </button>

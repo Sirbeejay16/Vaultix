@@ -6,6 +6,7 @@ import {
   Index,
   Unique,
 } from 'typeorm';
+import { DATETIME_COLUMN_TYPE } from '../../../utils/database-column-types';
 
 export enum StellarEventType {
   ESCROW_CREATED = 'ESCROW_CREATED',
@@ -44,7 +45,7 @@ export class StellarEvent {
   @Index()
   ledger: number;
 
-  @Column({ type: 'datetime' })
+  @Column({ type: DATETIME_COLUMN_TYPE })
   @Index()
   timestamp: Date;
 
@@ -78,4 +79,10 @@ export class StellarEvent {
 
   @Column({ type: 'text', nullable: true })
   reason?: string;
+
+  // Monotonic cursor for incremental sync
+  // Composite of ledger sequence and event index for uniqueness
+  @Column({ type: 'bigint', name: 'cursor' })
+  @Index()
+  cursor: string;
 }

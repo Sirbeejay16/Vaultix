@@ -57,13 +57,115 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
-## Database Migrations
+## Security Headers
+
+The backend uses [Helmet](https://helmetjs.github.io/) to automatically set security-related HTTP headers on all responses. Since this is an API-only server (no HTML serving), headers are tuned accordingly.
+
+### Headers Configured
+
+| Header                      | Value                                        | Purpose                                          |
+| --------------------------- | -------------------------------------------- | ------------------------------------------------ |
+| `X-Frame-Options`           | `DENY`                                       | Prevents clickjacking by disallowing framing     |
+| `X-Content-Type-Options`    | `nosniff`                                    | Prevents MIME-type sniffing                      |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`        | Enforces HTTPS (HSTS)                            |
+| `Referrer-Policy`           | `strict-origin-when-cross-origin`            | Controls referrer information sent with requests |
+| `Content-Security-Policy`   | `default-src 'self'; script-src 'self'; ...` | Restricts resource loading to same origin        |
+| `X-XSS-Protection`          | _(disabled)_                                 | Modern browsers use CSP instead                  |
+
+### CORS Configuration
+
+CORS origins are configurable via the `CORS_ORIGINS` environment variable (comma-separated list). Defaults to `http://localhost:3000,http://localhost:3001` for local development.
+
+```env
+CORS_ORIGINS=https://app.vaultix.io,https://admin.vaultix.io
+```
+
+## Admin Role Hierarchy
+
+The backend implements a three-tier role system enforced via JWT authentication and guard middleware.
+
+### Roles
+
+| Role          | Description                                                                                                    |
+| ------------- | -------------------------------------------------------------------------------------------------------------- |
+| `USER`        | Default role for all registered users. Can create/manage own escrows.                                          |
+| `ADMIN`       | Platform administrators. Access to admin dashboard, escrow management, user management, audit logs, analytics. |
+| `SUPER_ADMIN` | Highest privilege level. Includes all ADMIN capabilities plus user role management (promote/demote).           |
+
+### Guard Chain
+
+All admin endpoints require **both** guards in sequence:
+
+```
+@UseGuards(AuthGuard, AdminGuard)   // ADMIN or SUPER_ADMIN
+@UseGuards(AuthGuard, SuperAdminGuard)  // SUPER_ADMIN only
+```
+
+- **AuthGuard** — validates JWT, looks up user from DB, attaches `{ userId, walletAddress, role }` to request. Rejects suspended accounts.
+- **AdminGuard** — verifies `role` is `ADMIN` or `SUPER_ADMIN`. Returns `403` with clear message otherwise.
+- **SuperAdminGuard** — verifies `role` is `SUPER_ADMIN`. Returns `403` with clear message otherwise.
+
+### Role Management Endpoints (Super-Admin Only)
+
+| Method | Endpoint                      | Description                                       |
+| ------ | ----------------------------- | ------------------------------------------------- |
+| `POST` | `/v1/admin/users/:id/promote` | Promote user to ADMIN. Requires `reason` in body. |
+| `POST` | `/v1/admin/users/:id/demote`  | Demote user to USER. Requires `reason` in body.   |
+| `GET`  | `/v1/admin/users/:id/roles`   | View role change history for a user.              |
+
+### Safety Rules
+
+- Cannot promote or demote your own account
+- Cannot demote the last remaining super-admin
+- All role changes require a `reason` (max 500 chars) for audit trail
+- Every role change is logged in `admin_audit_log` with actor ID, action type, old/new role, and reason
+
+## Database
+
+The backend supports two database drivers, selected automatically at startup:
+
+- **SQLite** (default, local dev) — used whenever `DATABASE_URL` is unset.
+  Configured via `DATABASE_PATH` (defaults to `./data/vaultix.db`).
+- **PostgreSQL** (recommended for staging/production) — used automatically
+  when `DATABASE_URL` is set. Connection pooling (`DATABASE_POOL_MIN` /
+  `DATABASE_POOL_MAX`, default `2`/`10`) and SSL (`DATABASE_SSL`, forced on
+  automatically when `NODE_ENV=production`) are configured via
+  `src/config/database.config.ts`.
+
+Both drivers use the same TypeORM entities; only the column types that
+aren't portable between dialects (`datetime`) are resolved per-driver via
+`src/utils/database-column-types.ts`.
+
+### Running PostgreSQL locally
+
+A ready-to-use Postgres 15 instance is provided via Docker Compose:
+
+```bash
+$ docker compose up -d
+```
+
+This starts Postgres on `localhost:5432` with database `vaultix_db`, user
+`vaultix_user`, password `vaultix_pass` (matching the example in
+`.env.example`). Then set in your `.env`:
+
+```bash
+DATABASE_URL=postgresql://vaultix_user:vaultix_pass@localhost:5432/vaultix_db
+```
+
+### Migrations
 
 This project uses TypeORM migrations for database schema management.
+SQLite and PostgreSQL each have their own migration history, since the two
+dialects don't share SQL syntax — `src/migrations/` for SQLite,
+`src/migrations-postgres/` for PostgreSQL. `data-source.ts` and
+`app.module.ts` both pick the matching directory automatically based on
+whether `DATABASE_URL` is set.
 
 ```bash
 # Generate a new migration based on entity changes
-$ npm run migration:generate -- src/migrations/MigrationName
+# (targets whichever driver DATABASE_URL/DATABASE_PATH currently selects)
+$ npm run migration:generate -- src/migrations/MigrationName        # sqlite
+$ npm run migration:generate -- src/migrations-postgres/MigrationName  # postgres, with DATABASE_URL set
 
 # Execute pending migrations
 $ npm run migration:run
@@ -76,6 +178,58 @@ $ npm run migration:show
 ```
 
 Note: In development, `synchronize: false` is set to ensure schema changes are always handled via migrations. Migrations run automatically on application startup (`migrationsRun: true`).
+
+### Health check
+
+`GET /health/database` reports the active driver, connection status, and
+whether any migrations are still pending — useful for readiness probes and
+verifying a Postgres cutover:
+
+```json
+{
+  "status": "up",
+  "databaseType": "postgres",
+  "responseTimeMs": 4,
+  "migrations": { "pending": false, "total": 1 }
+}
+```
+
+## Docker
+
+Prerequisites: Docker Engine on Linux, or Docker Desktop on macOS/Windows. Build
+the image from this directory:
+
+```bash
+docker build -t vaultix-backend .
+```
+
+Run it with a persistent SQLite database volume and a JWT secret of at least 32
+characters:
+
+```bash
+docker volume create vaultix-backend-data
+docker run -d --name vaultix-backend \
+  -p 3000:3000 \
+  -e JWT_SECRET='replace-with-at-least-32-characters' \
+  -v vaultix-backend-data:/app/data \
+  vaultix-backend
+```
+
+The container runs as the non-root `node` user. Docker checks
+`GET /health/live`; inspect the container's status with
+`docker inspect --format='{{.State.Health.Status}}' vaultix-backend`.
+
+To use the PostgreSQL service from `docker-compose.yml`, start it with
+`docker compose up -d` and set `DATABASE_URL` on the backend container to use
+`host.docker.internal` as the database host. Set `DATABASE_SSL=false` when
+connecting to this local Postgres instance. Docker Desktop provides
+`host.docker.internal` on macOS and Windows; on native Linux, add
+`--add-host=host.docker.internal:host-gateway` to `docker run`.
+
+Commands above use Bash/POSIX line continuation. On Windows, use Docker Desktop
+with WSL 2 integration and run them in a WSL shell, or convert the multiline
+commands to PowerShell syntax. The named volume keeps its data across Linux,
+macOS, and Docker Desktop environments.
 
 ## Deployment
 
