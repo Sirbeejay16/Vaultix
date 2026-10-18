@@ -6,7 +6,6 @@ import { Escrow, EscrowStatus } from '../escrow/entities/escrow.entity';
 import { Party } from '../escrow/entities/party.entity';
 import { EscrowEvent } from '../escrow/entities/escrow-event.entity';
 import { AdminAuditLogService } from './services/admin-audit-log.service';
-import { Repository } from 'typeorm';
 
 describe('AdminService', () => {
   let service: AdminService;
@@ -74,7 +73,7 @@ describe('AdminService', () => {
     }).compile();
 
     service = module.get<AdminService>(AdminService);
-    auditLogService = module.get(AdminAuditLogService);
+    auditLogService = module.get<AdminAuditLogService>(AdminAuditLogService);
   });
 
   describe('getAllUsers', () => {
@@ -118,6 +117,7 @@ describe('AdminService', () => {
 
       expect(mockUser.isActive).toBe(false);
       expect(userRepo.save).toHaveBeenCalled();
+
       expect(auditLogService.create).toHaveBeenCalled();
       expect(result.message).toBe('User suspended successfully');
     });

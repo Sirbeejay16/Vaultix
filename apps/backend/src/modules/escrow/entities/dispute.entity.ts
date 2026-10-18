@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { Escrow } from './escrow.entity';
 import { User } from '../../user/entities/user.entity';
+import { DATETIME_COLUMN_TYPE } from '../../../utils/database-column-types';
 
 export enum DisputeStatus {
   OPEN = 'open',
@@ -49,6 +50,19 @@ export class Dispute {
   @Column({ type: 'simple-json', nullable: true })
   evidence: string[] | null;
 
+  // Evidence file metadata. `storage` and `storageKey` support local/S3; older IPFS rows remain readable.
+  @Column({ type: 'simple-json', nullable: true, default: () => "'[]'" })
+  evidenceFiles: Array<{
+    cid: string;
+    storageKey?: string;
+    storage?: 'local' | 's3' | 'ipfs';
+    name: string;
+    type: string;
+    size: number;
+    uploadedAt: string;
+    uploadedBy: string;
+  }> | null;
+
   @Column({ type: 'varchar', default: DisputeStatus.OPEN })
   status: DisputeStatus;
 
@@ -73,7 +87,7 @@ export class Dispute {
   @Column({ type: 'varchar', nullable: true })
   outcome: DisputeOutcome | null;
 
-  @Column({ type: 'datetime', nullable: true })
+  @Column({ type: DATETIME_COLUMN_TYPE, nullable: true })
   resolvedAt: Date | null;
 
   @CreateDateColumn()

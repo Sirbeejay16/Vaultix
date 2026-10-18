@@ -1,26 +1,46 @@
-'use client';
+'use client'; // Next.js directive: this component runs on the client (uses state, localStorage, etc.)
 
 import React, { useState } from 'react';
-import { Bell, CheckCheck, X } from 'lucide-react';
-import { useNotifications } from '@/hooks/useNotifications';
-import { formatDistanceToNow } from '@/utils/date';
-import Link from 'next/link';
+import { Bell, CheckCheck, X, Trash2, ChevronRight, Loader2 } from 'lucide-react'; // Icons
+import { useNotifications } from '@/hooks/useNotifications'; // Custom hook providing notification data and actions
+import { formatDistanceToNow } from '@/utils/date'; // Formats a date as relative time (e.g. "5 minutes ago")
+import Link from 'next/link'; // Client-side navigation
+import { motion, AnimatePresence } from 'framer-motion'; // AnimatePresence lets the dropdown animate on exit as well
+import { toast } from 'sonner'; // Toast notifications for user feedback
 
+/**
+ * Props for NotificationBell.
+ */
 interface NotificationBellProps {
+  /** Extra classes applied to the root wrapper */
   className?: string;
 }
 
+/**
+ * NotificationBell
+ * A bell icon with an unread-count badge. Clicking it opens a dropdown panel
+ * showing the 10 most recent notifications, grouped by date
+ * (Today / Yesterday / Earlier), with actions to mark as read and dismiss.
+ */
 const NotificationBell: React.FC<NotificationBellProps> = ({ className = '' }) => {
+  // Whether the dropdown panel is open
   const [isOpen, setIsOpen] = useState(false);
-  const { notifications, unreadCount, isLoading, markAsRead, markAllAsRead } = useNotifications();
+  // Notification data and actions from the custom hook
+  const { notifications, unreadCount, isLoading, markAsRead, markAllAsRead, refetch } = useNotifications();
 
-  // Group notifications by date
-  const groupedNotifications = notifications.reduce((acc, notification) => {
+  // Limit to 10 most recent notifications in the dropdown
+  const recentNotifications = notifications.slice(0, 10);
+
+  // Group notifications by date into { Today: [...], Yesterday: [...], Earlier: [...] }
+  const groupedNotifications = recentNotifications.reduce((acc, notification) => {
     const date = new Date(notification.createdAt);
     const now = new Date();
+    // Compute yesterday's date by subtracting one day from now
     const yesterday = new Date(now);
     yesterday.setDate(yesterday.getDate() - 1);
 
+    // Default group; overridden below if the date matches today or yesterday.
+    // toDateString() compares calendar days while ignoring the time of day.
     let group = 'Earlier';
     if (date.toDateString() === now.toDateString()) {
       group = 'Today';
@@ -28,6 +48,7 @@ const NotificationBell: React.FC<NotificationBellProps> = ({ className = '' }) =
       group = 'Yesterday';
     }
 
+    // Create the group's array on first use, then add this notification to it
     if (!acc[group]) {
       acc[group] = [];
     }
@@ -35,6 +56,10 @@ const NotificationBell: React.FC<NotificationBellProps> = ({ className = '' }) =
     return acc;
   }, {} as Record<string, typeof notifications>);
 
+  /**
+   * Returns an emoji icon for a given notification event type.
+   * Unknown event types fall back to a generic bell.
+   */
   const getEventIcon = (eventType: string) => {
     switch (eventType) {
       case 'ESCROW_CREATED':
@@ -64,7 +89,11 @@ const NotificationBell: React.FC<NotificationBellProps> = ({ className = '' }) =
     }
   };
 
-  const getEventMessage = (eventType: string, payload: Record<string, unknown>) => {
+  /**
+   * Returns a human-readable message for a given event type.
+   * Falls back to a generic "Notification" if the type isn't recognized.
+   */
+  const getEventMessage = (eventType: string) => {
     const messages: Record<string, string> = {
       ESCROW_CREATED: 'New escrow created',
       ESCROW_FUNDED: 'Escrow has been funded',
@@ -81,136 +110,206 @@ const NotificationBell: React.FC<NotificationBellProps> = ({ className = '' }) =
     return messages[eventType] || 'Notification';
   };
 
-  const handleNotificationClick = async (notificationId: string, escrowId?: string) => {
-    if (!notifications.find(n => n.id === notificationId)?.readAt) {
+  /**
+   * Called when a notification link is clicked.
+   * Marks the notification as read (if it isn't already) and closes the dropdown.
+   * Navigation itself is handled by the surrounding <Link>.
+   */
+  const handleNotificationClick = async (notificationId: string) => {
+    const matched = notifications.find(n => n.id === notificationId);
+    // readAt is only set once a notification has been read
+    if (matched && !matched.readAt) {
       await markAsRead(notificationId);
     }
     setIsOpen(false);
   };
 
+  /**
+   * Marks every notification as read and shows a confirmation toast.
+   */
   const handleMarkAllAsRead = async () => {
     await markAllAsRead();
+    toast.success('All notifications marked as read');
+  };
+
+  /**
+   * Dismisses a single notification.
+   * The dismissed ID is stored in localStorage (client-side only, per browser),
+   * then the list is refetched so the hook can filter it out.
+   * preventDefault/stopPropagation stop the click from also triggering
+   * the parent <Link> navigation.
+   */
+  const handleDismissItem = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Read the existing list of dismissed IDs (or start with an empty list)
+    const currentDismissed = JSON.parse(localStorage.getItem('vaultix_dismissed_notifications') || '[]');
+    // Append the new ID and save it back
+    localStorage.setItem('vaultix_dismissed_notifications', JSON.stringify([...currentDismissed, id]));
+    refetch();
+    toast.success('Notification dismissed');
   };
 
   return (
     <div className={`relative ${className}`}>
-      {/* Bell Icon */}
+      {/* Bell Icon: toggles the dropdown */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="relative p-2 text-gray-300 hover:text-white transition-colors"
+        className="relative p-2 text-gray-300 hover:text-white transition-colors cursor-pointer"
         aria-label="Notifications"
       >
-        <Bell className="w-6 h-6" />
+        <Bell className="w-5.5 h-5.5" />
+        {/* Unread badge: only shown when there are unread notifications; caps the display at 99+ */}
         {unreadCount > 0 && (
-          <span className="absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white transform translate-x-1/4 -translate-y-1/4 bg-red-500 rounded-full">
+          <span className="absolute top-1 right-1 inline-flex items-center justify-center px-1.5 py-0.5 text-[10px] font-bold leading-none text-white transform translate-x-1/4 -translate-y-1/4 bg-red-500 rounded-full">
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
       </button>
 
-      {/* Dropdown Panel */}
-      {isOpen && (
-        <>
-          {/* Backdrop */}
-          <div 
-            className="fixed inset-0 z-40" 
-            onClick={() => setIsOpen(false)}
-          />
-          
-          {/* Panel */}
-          <div className="absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-gray-900 border border-gray-700 rounded-lg shadow-2xl z-50 overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-              <h3 className="text-lg font-semibold text-white">Notifications</h3>
-              <div className="flex items-center gap-2">
-                {unreadCount > 0 && (
+      {/* Dropdown Panel with AnimatePresence slide-in */}
+      <AnimatePresence>
+        {isOpen && (
+          <>
+            {/* Backdrop: full-screen click catcher that closes the panel when clicked outside.
+                Slightly dimmed on mobile, transparent on desktop. */}
+            <div 
+              className="fixed inset-0 z-40 bg-black/10 md:bg-transparent" 
+              onClick={() => setIsOpen(false)}
+            />
+            
+            {/* Panel (Full width on mobile, w-96 on desktop).
+                Animates in/out by fading, sliding up/down and scaling slightly. */}
+            <motion.div
+              initial={{ opacity: 0, y: 15, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 15, scale: 0.95 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              className="fixed md:absolute right-0 left-0 md:left-auto top-16 md:top-auto mt-2 w-full md:w-96 bg-[#12121a] border border-white/5 md:rounded-xl shadow-2xl z-50 overflow-hidden"
+            >
+              {/* Header: title, "Mark all read" button (only when unread exist) and close button */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                <h3 className="text-sm font-semibold text-white">Recent Notifications</h3>
+                <div className="flex items-center gap-3">
+                  {unreadCount > 0 && (
+                    <button
+                      onClick={handleMarkAllAsRead}
+                      className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors cursor-pointer"
+                    >
+                      <CheckCheck className="w-3.5 h-3.5" />
+                      Mark all read
+                    </button>
+                  )}
                   <button
-                    onClick={handleMarkAllAsRead}
-                    className="flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300 transition-colors"
+                    onClick={() => setIsOpen(false)}
+                    className="text-gray-400 hover:text-white transition-colors cursor-pointer"
+                    aria-label="Close"
                   >
-                    <CheckCheck className="w-4 h-4" />
-                    Mark all read
+                    <X className="w-4 h-4" />
                   </button>
-                )}
-                <button
-                  onClick={() => setIsOpen(false)}
-                  className="text-gray-400 hover:text-white transition-colors"
-                  aria-label="Close"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                </div>
               </div>
-            </div>
 
-            {/* Footer — see all */}
-            <div className="px-4 py-2 border-b border-gray-700">
-              <Link
-                href="/notifications"
-                onClick={() => setIsOpen(false)}
-                className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
-              >
-                See all notifications →
-              </Link>
-            </div>
+              {/* View all link: goes to the full notifications page and closes the panel */}
+              <div className="px-4 py-2 border-b border-white/5 bg-white/[0.01]">
+                <Link
+                  href="/notifications"
+                  onClick={() => setIsOpen(false)}
+                  className="text-xs text-purple-400 hover:text-purple-300 transition-colors font-medium flex items-center justify-between"
+                >
+                  <span>See all notifications</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </Link>
+              </div>
 
-            {/* Content */}
-            <div className="max-h-[70vh] overflow-y-auto">
-              {isLoading ? (
-                <div className="p-8 text-center text-gray-400">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
-                  <p className="mt-2">Loading notifications...</p>
-                </div>
-              ) : notifications.length === 0 ? (
-                <div className="p-8 text-center text-gray-400">
-                  <Bell className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                  <p>No notifications yet</p>
-                  <p className="text-sm mt-1">We&apos;ll notify you when there&apos;s something new</p>
-                </div>
-              ) : (
-                Object.entries(groupedNotifications).map(([group, groupNotifications]) => (
-                  <div key={group}>
-                    <div className="px-4 py-2 bg-gray-800/50 border-y border-gray-700">
-                      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                        {group}
-                      </h4>
-                    </div>
-                    {groupNotifications.map((notification) => (
-                      <Link
-                        key={notification.id}
-                        href={notification.escrowId ? `/escrow/${notification.escrowId}` : '/dashboard'}
-                        onClick={() => handleNotificationClick(notification.id, notification.escrowId)}
-                        className={`block px-4 py-3 border-b border-gray-700 hover:bg-gray-800 transition-colors ${
-                          !notification.readAt ? 'bg-gray-800/30' : ''
-                        }`}
-                      >
-                        <div className="flex items-start gap-3">
-                          <span className="text-xl">{getEventIcon(notification.eventType)}</span>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-white truncate">
-                              {getEventMessage(notification.eventType, notification.payload)}
-                            </p>
-                            {notification.escrowId && (
-                              <p className="text-xs text-gray-400 mt-0.5">
-                                Escrow: {notification.escrowId.slice(0, 8)}...
-                              </p>
-                            )}
-                            <p className="text-xs text-gray-500 mt-1">
-                              {formatDistanceToNow(new Date(notification.createdAt))}
-                            </p>
-                          </div>
-                          {!notification.readAt && (
-                            <span className="w-2 h-2 bg-blue-500 rounded-full flex-shrink-0 mt-1"></span>
-                          )}
-                        </div>
-                      </Link>
-                    ))}
+              {/* Content: scrollable list (max 50% of viewport height).
+                  Renders one of three states: loading, empty, or grouped list. */}
+              <div className="max-h-[50vh] overflow-y-auto divide-y divide-white/5">
+                {isLoading ? (
+                  // Loading state
+                  <div className="p-8 text-center text-gray-500">
+                    <Loader2 className="animate-spin h-5 w-5 border-b-2 border-purple-500 mx-auto mb-2" />
+                    <p className="text-xs">Loading notifications...</p>
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-        </>
-      )}
+                ) : recentNotifications.length === 0 ? (
+                  // Empty state: no notifications at all
+                  <div className="p-8 text-center text-gray-500">
+                    <Bell className="w-8 h-8 mx-auto mb-2 opacity-30 text-purple-400" />
+                    <p className="text-xs font-semibold text-white">No notifications yet</p>
+                    <p className="text-[11px] mt-1">We&apos;ll notify you when there&apos;s something new</p>
+                  </div>
+                ) : (
+                  // Grouped list: one section per date group (Today / Yesterday / Earlier)
+                  Object.entries(groupedNotifications).map(([group, groupNotifications]) => (
+                    <div key={group}>
+                      {/* Group label */}
+                      <div className="px-4 py-1 bg-white/[0.02] border-b border-white/5">
+                        <span className="text-[9px] font-bold text-gray-500 uppercase tracking-wider">
+                          {group}
+                        </span>
+                      </div>
+                      {/* Notifications within this group */}
+                      {groupNotifications.map((notification) => (
+                        // Row: `group` enables showing the dismiss button on hover.
+                        // Unread notifications get a subtle purple background.
+                        <div
+                          key={notification.id}
+                          className={`relative group flex items-start justify-between gap-2 px-4 py-3 hover:bg-white/[0.02] transition-colors ${
+                            !notification.readAt ? 'bg-purple-950/5' : ''
+                          }`}
+                        >
+                          {/* Clickable area: links to the related escrow, or to the dashboard
+                              if the notification isn't tied to an escrow */}
+                          <Link
+                            href={notification.escrowId ? `/escrow/${notification.escrowId}` : '/dashboard'}
+                            onClick={() => handleNotificationClick(notification.id)}
+                            className="flex-1 flex gap-3 min-w-0"
+                          >
+                            {/* Event emoji */}
+                            <span className="text-base flex-shrink-0 mt-0.5">
+                              {getEventIcon(notification.eventType)}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              {/* Event message */}
+                              <p className="text-xs font-medium text-white truncate">
+                                {getEventMessage(notification.eventType)}
+                              </p>
+                              {/* Shortened escrow ID (first 8 chars), if present */}
+                              {notification.escrowId && (
+                                <p className="text-[10px] text-gray-500 mt-0.5">
+                                  Escrow: {notification.escrowId.slice(0, 8)}...
+                                </p>
+                              )}
+                              {/* Relative timestamp */}
+                              <p className="text-[9px] text-gray-600 mt-1">
+                                {formatDistanceToNow(new Date(notification.createdAt))}
+                              </p>
+                            </div>
+                            {/* Unread indicator dot */}
+                            {!notification.readAt && (
+                              <span className="w-1.5 h-1.5 bg-purple-500 rounded-full flex-shrink-0 mt-1.5" />
+                            )}
+                          </Link>
+
+                          {/* Per-item dismiss button: hidden until the row is hovered */}
+                          <button
+                            onClick={(e) => handleDismissItem(e, notification.id)}
+                            className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-white rounded transition-all cursor-pointer flex-shrink-0"
+                            title="Dismiss notification"
+                            aria-label="Dismiss notification"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
 import { useEscrow } from "@/hooks/useEscrow";
 import { useWallet } from "@/hooks/useWallet";
+import { useWalletSession } from "@/hooks/useWalletSession";
+import { fetchPendingPartyInvitations } from "@/lib/escrow-api";
 import EscrowHeader from "@/components/escrow/detail/EscrowHeader";
 import PartiesSection from "@/components/escrow/detail/PartiesSection";
 import TermsSection from "@/components/escrow/detail/TermsSection";
-import TimelineSection from "@/components/escrow/detail/TimelineSection";
+import EscrowTimeline from "@/components/escrow/EscrowTimeline";
 import ActivityFeed from "@/components/common/ActivityFeed";
 import ConditionsList from "@/components/escrow/ConditionsList";
 import { IParty } from "@/types/escrow";
@@ -16,14 +19,21 @@ import FileDisputeModal from "@/components/escrow/detail/file-dispute-modal";
 import DisputeSection from "@/components/escrow/detail/DisputeSection";
 import ArbitratorResolutionModal from "@/components/escrow/detail/ArbitratorResolutionModal";
 import { EscrowDetailSkeleton } from "@/components/ui/EscrowDetailSkeleton";
+import { CanonicalEscrowStatus } from '@/utils/escrowStatus';
+import { apiClient } from "@/lib/api-client";
 
 const EscrowDetailPage = () => {
   const { id } = useParams();
-  const { escrow, error, loading, refetch } = useEscrow(id as string);
+  const { escrow, error, loading, refetch, isLive } = useEscrow(id as string);
   const { connected, publicKey, connect } = useWallet();
-  const [userRole, setUserRole] = useState<
-    "creator" | "counterparty" | "arbitrator" | null
-  >(null);
+  const { activePublicKey, canPerformProtectedActions } = useWalletSession();
+  const pendingInvitationsQuery = useQuery({
+    queryKey: ["pending-party-invitations", activePublicKey],
+    queryFn: fetchPendingPartyInvitations,
+    enabled: canPerformProtectedActions,
+  });
+  
+  const [userRole, setUserRole] = useState<"creator" | "counterparty" | "arbitrator" | null>(null);
   const [currentParty, setCurrentParty] = useState<IParty | null>(null);
   const [disputeOpen, setDisputeOpen] = useState(false);
   const [resolutionOpen, setResolutionOpen] = useState(false);
@@ -34,12 +44,19 @@ const EscrowDetailPage = () => {
       if (escrow.creatorId === publicKey) {
         setUserRole("creator");
         setCurrentParty(null);
-      } else if (escrow.parties?.some((p) => p.userId === publicKey)) {
-        setUserRole("counterparty");
-        setCurrentParty(
-          escrow.parties.find((p) => p.userId === publicKey) ?? null,
-        );
       } else {
+        const pendingParty = pendingInvitationsQuery.data?.find(
+          (invitation) => invitation.escrow.id === escrow.id,
+        )?.party;
+        const walletParty = escrow.parties?.find(
+          (party) => party.userId === publicKey,
+        );
+        const party = pendingParty ?? walletParty ?? null;
+        if (party) {
+          setUserRole("counterparty");
+          setCurrentParty(party);
+          return;
+        }
         setUserRole(null);
         setCurrentParty(null);
       }
@@ -47,29 +64,25 @@ const EscrowDetailPage = () => {
       setUserRole(null);
       setCurrentParty(null);
     }
-  }, [escrow, publicKey]);
+  }, [escrow, publicKey, pendingInvitationsQuery.data]);
 
-  // Fetch dispute data when escrow is in DISPUTED status
-  useEffect(() => {
-    const fetchDispute = async () => {
-      if (escrow?.status !== "DISPUTED") {
-        setDispute(null);
-        return;
-      }
-
-      try {
-        const response = await fetch(`/api/escrows/${escrow.id}/dispute`);
-        if (response.ok) {
-          const disputeData = await response.json();
-          setDispute(disputeData);
-        }
-      } catch (error) {
-        console.error("Error fetching dispute:", error);
-      }
-    };
-
-    fetchDispute();
+  const fetchDisputeData = useCallback(async () => {
+    if (escrow?.status !== CanonicalEscrowStatus.DISPUTED) {
+      setDispute(null);
+      return;
+    }
+    try {
+      const disputeData = await apiClient.get(`/escrows/${escrow.id}/dispute`);
+      setDispute(disputeData);
+    } catch (error) {
+      console.error("Error fetching dispute details:", error);
+    }
   }, [escrow?.id, escrow?.status]);
+
+  // Hook up dispute monitoring states
+  useEffect(() => {
+    void fetchDisputeData();
+  }, [fetchDisputeData]);
 
   if (loading) return <EscrowDetailSkeleton />;
 
@@ -77,9 +90,7 @@ const EscrowDetailPage = () => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4">
         <div className="bg-card text-card-foreground p-6 sm:p-8 rounded-xl shadow-sm border border-border max-w-md w-full text-center">
-          <h2 className="text-xl font-bold text-destructive mb-3">
-            Error Loading Escrow
-          </h2>
+          <h2 className="text-xl font-bold text-destructive mb-3">Error Loading Escrow</h2>
           <p className="text-muted-foreground text-sm mb-4">{error}</p>
           <button
             onClick={() => window.location.reload()}
@@ -96,12 +107,8 @@ const EscrowDetailPage = () => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4">
         <div className="bg-card text-card-foreground p-6 sm:p-8 rounded-xl shadow-sm border border-border max-w-md w-full text-center">
-          <h2 className="text-xl font-bold text-foreground mb-3">
-            Escrow Not Found
-          </h2>
-          <p className="text-muted-foreground text-sm mb-4">
-            The requested escrow agreement could not be found.
-          </p>
+          <h2 className="text-xl font-bold text-foreground mb-3">Escrow Not Found</h2>
+          <p className="text-muted-foreground text-sm mb-4">The requested escrow agreement could not be found.</p>
           <Link
             href="/escrow"
             className="min-h-11 inline-flex items-center px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium transition-colors cursor-pointer"
@@ -116,6 +123,19 @@ const EscrowDetailPage = () => {
   return (
     <div className="min-h-screen bg-background text-foreground py-4 sm:py-8">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+        
+        {/* Visual Live Status Sync Badge Indicator */}
+        <div className="flex justify-end mb-3">
+          <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+            isLive 
+              ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/30" 
+              : "bg-amber-500/10 text-amber-500 border-amber-500/30 animate-pulse"
+          }`}>
+            <span className={`h-2 w-2 rounded-full ${isLive ? "bg-emerald-500 animate-ping" : "bg-amber-500"}`} />
+            {isLive ? "LIVE SYNC ACTIVE" : "DISCONNECTED — POLLING MODE"}
+          </div>
+        </div>
+
         <EscrowHeader
           escrow={escrow}
           userRole={userRole}
@@ -125,15 +145,13 @@ const EscrowDetailPage = () => {
           onFileDispute={() => setDisputeOpen(true)}
         />
 
-        {/* On mobile: Terms card sits below header, before the main content columns */}
         <div className="lg:hidden mt-4">
           <TermsSection escrow={escrow} userRole={userRole} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 mt-4 sm:mt-8">
-          {/* Main content column */}
           <div className="lg:col-span-2 space-y-4 sm:space-y-6">
-            {escrow.status === "DISPUTED" && (
+            {escrow.status === CanonicalEscrowStatus.DISPUTED && (
               <DisputeSection
                 escrowId={escrow.id}
                 escrowStatus={escrow.status}
@@ -142,21 +160,7 @@ const EscrowDetailPage = () => {
                 dispute={dispute}
                 onDisputeUpdate={() => {
                   refetch();
-                  // Refetch dispute data
-                  const fetchDispute = async () => {
-                    try {
-                      const response = await fetch(
-                        `/api/escrows/${escrow.id}/dispute`,
-                      );
-                      if (response.ok) {
-                        const disputeData = await response.json();
-                        setDispute(disputeData);
-                      }
-                    } catch (error) {
-                      console.error("Error fetching dispute:", error);
-                    }
-                  };
-                  fetchDispute();
+                  void fetchDisputeData();
                 }}
                 onResolveDispute={() => setResolutionOpen(true)}
               />
@@ -174,11 +178,15 @@ const EscrowDetailPage = () => {
               currentParty={currentParty}
               onConditionsUpdated={refetch}
             />
-            <TimelineSection escrow={escrow} />
+            <EscrowTimeline
+              escrowId={escrow.id}
+              escrowStatus={escrow.status}
+              hasConditions={(escrow.conditions?.length ?? 0) > 0}
+              initialEvents={escrow.events}
+            />
             <ActivityFeed escrowId={id as string} />
           </div>
 
-          {/* Sidebar — hidden on mobile (shown above) */}
           <div className="hidden lg:block lg:col-span-1">
             <TermsSection escrow={escrow} userRole={userRole} />
           </div>
@@ -193,19 +201,7 @@ const EscrowDetailPage = () => {
         escrowStatus={escrow.status}
         onDisputeUpdate={() => {
           refetch();
-          // Fetch the newly created dispute
-          const fetchDispute = async () => {
-            try {
-              const response = await fetch(`/api/escrows/${escrow.id}/dispute`);
-              if (response.ok) {
-                const disputeData = await response.json();
-                setDispute(disputeData);
-              }
-            } catch (error) {
-              console.error("Error fetching dispute:", error);
-            }
-          };
-          fetchDispute();
+          void fetchDisputeData();
         }}
       />
       <ArbitratorResolutionModal

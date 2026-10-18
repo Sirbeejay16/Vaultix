@@ -1,47 +1,36 @@
 import React from 'react';
 import Link from 'next/link';
+import { Button } from '@/components/ui/button';
 import EscrowCard from './EscrowCard';
 import { EscrowCardSkeleton } from '@/components/ui/EscrowCardSkeleton';
-
-// Define the interface here since we can't import from types yet
-interface IEscrow {
-  id: string;
-  title: string;
-  description: string;
-  amount: string;
-  asset: string;
-  creatorAddress: string;
-  counterpartyAddress: string;
-  deadline: string;
-  status: 'created' | 'funded' | 'confirmed' | 'released' | 'completed' | 'cancelled' | 'disputed';
-  createdAt: string;
-  updatedAt: string;
-  milestones?: Array<{
-    id: string;
-    title: string;
-    amount: string;
-    status: 'pending' | 'released';
-  }>;
-}
+import { ErrorFallback } from '@/components/ErrorFallback';
+import type { IEscrow } from '@/types/escrow';
+import { CanonicalEscrowStatus } from '@/utils/escrowStatus';
 
 interface EscrowListProps {
   escrows: IEscrow[];
   isLoading: boolean;
   isError: boolean;
-  activeTab: 'all' | 'active' | 'pending' | 'completed' | 'disputed';
+  error?: unknown;
+  refetch?: () => void;
+  activeTab: 'all' | CanonicalEscrowStatus;
   hasNextPage?: boolean;
   fetchNextPage?: () => void;
   isFetchingNextPage?: boolean;
+  searchedAddress?: string;
 }
 
 const EscrowList: React.FC<EscrowListProps> = ({
   escrows,
   isLoading,
   isError,
+  error,
+  refetch,
   activeTab,
   hasNextPage,
   fetchNextPage,
   isFetchingNextPage,
+  searchedAddress,
 }) => {
   // Show loading skeletons when data is loading
   if (isLoading && escrows.length === 0) {
@@ -58,10 +47,20 @@ const EscrowList: React.FC<EscrowListProps> = ({
   // Show error state
   if (isError) {
     return (
-      <div className="text-center py-10">
-        <h3 className="text-lg font-medium text-red-600">Error Loading Escrows</h3>
-        <p className="text-gray-500 mt-2">There was an issue retrieving your escrow agreements. Please try again later.</p>
-      </div>
+      <ErrorFallback
+        error={
+          error instanceof Error
+            ? error
+            : new Error(
+                typeof error === 'string'
+                  ? error
+                  : 'Failed to load escrows',
+              )
+        }
+        reset={() => refetch?.()}
+        title="Failed to load escrows"
+        compact
+      />
     );
   }
 
@@ -72,17 +71,28 @@ const EscrowList: React.FC<EscrowListProps> = ({
       case 'all':
         emptyMessage = 'You have no escrow agreements yet.';
         break;
-      case 'active':
+      case CanonicalEscrowStatus.ACTIVE:
+      case CanonicalEscrowStatus.FUNDED:
         emptyMessage = 'You have no active escrow agreements.';
         break;
-      case 'pending':
+      case CanonicalEscrowStatus.CREATED:
         emptyMessage = 'You have no escrows pending confirmation.';
         break;
-      case 'completed':
+      case CanonicalEscrowStatus.COMPLETED:
+      case CanonicalEscrowStatus.RESOLVED:
         emptyMessage = 'You have no completed escrow agreements.';
         break;
-      case 'disputed':
+      case CanonicalEscrowStatus.DISPUTED:
         emptyMessage = 'You have no disputed escrow agreements.';
+        break;
+      case CanonicalEscrowStatus.EXPIRED:
+        emptyMessage = 'You have no expired escrow agreements.';
+        break;
+      case CanonicalEscrowStatus.REFUNDED:
+        emptyMessage = 'You have no refunded escrow agreements.';
+        break;
+      case CanonicalEscrowStatus.CANCELLED:
+        emptyMessage = 'You have no cancelled escrow agreements.';
         break;
       default:
         emptyMessage = 'No escrow agreements found.';
@@ -107,7 +117,7 @@ const EscrowList: React.FC<EscrowListProps> = ({
   return (
     <div className="space-y-4">
       {escrows.map((escrow) => (
-        <EscrowCard key={escrow.id} escrow={escrow} />
+        <EscrowCard key={escrow.id} escrow={escrow} searchedAddress={searchedAddress} />
       ))}
 
       {/* Load more button for pagination */}

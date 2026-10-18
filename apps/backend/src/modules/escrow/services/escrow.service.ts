@@ -6,11 +6,22 @@ import {
   ConflictException,
   UnprocessableEntityException,
   Logger,
+  Optional,
 } from '@nestjs/common';
+import {
+  CursorPage,
+  CursorSortOrder,
+} from '../../../common/pagination/cursor-pagination.dto';
+import {
+  buildCursorPage,
+  decodeCursor,
+  toDbDate,
+} from '../../../common/pagination/cursor-pagination.util';
+import { ListEscrowsCursorDto } from '../dto/list-escrows-cursor.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository, SelectQueryBuilder } from 'typeorm';
-import { Escrow, EscrowStatus } from '../entities/escrow.entity';
-import { Party, PartyRole } from '../entities/party.entity';
+import { Escrow, EscrowStatus, EscrowType } from '../entities/escrow.entity';
+import { Party, PartyRole, PartyStatus } from '../entities/party.entity';
 import { Condition } from '../entities/condition.entity';
 import { EscrowEvent, EscrowEventType } from '../entities/escrow-event.entity';
 import {
@@ -43,12 +54,14 @@ import { WebhookService } from '../../../services/webhook/webhook.service';
 import { User, UserRole } from '../../user/entities/user.entity';
 import { IpfsService } from '../../ipfs/ipfs.service';
 import { AllowedAsset } from '../../assets/entities/allowed-asset.entity';
-import { normalizeMetadataHash } from '../utils/metadata-hash.util';
-import { EscrowLifecycleService } from '../escrow-lifecycle.service';
-import { EscrowFundingService } from '../escrow-funding.service';
-import { EscrowDisputeService } from '../escrow-dispute.service';
-import { EscrowQueryService } from '../escrow-query.service';
-import { StellarService } from '../../../services/stellar.service';
+import { NotificationService } from '../../../notifications/notifications.service';
+import { NotificationEventType } from '../../../notifications/enums/notification-event.enum';
+import { EventsGateway } from '../../../gateways/events.gateway';
+import {
+  assertAmountConservation,
+  decimalToBaseUnits,
+  baseUnitsToDecimal,
+} from '../amount.util';
 
 @Injectable()
 export class EscrowService {
@@ -73,194 +86,124 @@ export class EscrowService {
     private readonly stellarIntegrationService: EscrowStellarIntegrationService,
     private readonly webhookService: WebhookService,
     private readonly ipfsService: IpfsService,
-    private readonly lifecycle: EscrowLifecycleService,
-    private readonly funding: EscrowFundingService,
-    private readonly dispute: EscrowDisputeService,
-    private readonly query: EscrowQueryService,
-    private readonly stellarService: StellarService,
+    private readonly notificationService: NotificationService,
+    @Optional() private readonly eventsGateway?: EventsGateway,
   ) {}
+
+  /**
+   * Generate a unique idempotency key for notification deduplication
+   * Format: eventType:escrowId:userId:timestampBucket
+   * Timestamp bucket is 5-minute window to handle near-simultaneous events
+   */
+  private generateIdempotencyKey(
+    eventType: NotificationEventType,
+    escrowId: string,
+    userId: string,
+    actorId: string,
+  ): string {
+    const timestampBucket = Math.floor(Date.now() / (5 * 60 * 1000)); // 5-minute bucket
+    return `${eventType}:${escrowId}:${actorId}:${userId}:${timestampBucket}`;
+  }
 
   async create(
     dto: CreateEscrowDto,
     creatorId: string,
     ipAddress?: string,
   ): Promise<Escrow> {
-    // Validate Asset code and issuer
-    const assetCode = dto.asset?.code || 'XLM';
-    const assetIssuer = dto.asset?.issuer || null;
-
-    const allowedAsset = await this.assetRepository.findOne({
-      where: {
-        code: assetCode,
-        issuer: assetIssuer || undefined,
-        active: true,
-      },
-    });
-
-    if (!allowedAsset) {
-      throw new BadRequestException(
-        `Asset ${assetCode} is not allowed or inactive`,
-      );
-    }
-
-    // Validate decimal precision of the amount
-    const amountStr = dto.amount.toString();
-    const parts = amountStr.split('.');
-    if (parts.length > 1 && parts[1].length > allowedAsset.decimals) {
-      throw new BadRequestException(
-        `Amount exceeds asset's decimal precision of ${allowedAsset.decimals} decimal places`,
-      );
-    }
-
-    // Verify creator has registered wallet address and sufficient balance
-    const creatorUser = await this.userRepository.findOne({
-      where: { id: creatorId },
-    });
-    if (!creatorUser || !creatorUser.walletAddress) {
-      throw new BadRequestException('Creator has no registered wallet address');
-    }
-
     try {
-      const creatorAccount = await this.stellarService.getAccount(
-        creatorUser.walletAddress,
-      );
-      const creatorBalance = creatorAccount.balances.find((b) => {
-        if (assetCode === 'XLM' || assetCode === 'native') {
-          return b.asset_type === 'native';
-        } else {
-          return b.asset_code === assetCode && b.asset_issuer === assetIssuer;
-        }
-      });
+      const escrow = this.escrowRepository.create({
+        title: dto.title,
+        description: dto.description,
+        amount: dto.amount,
+        assetCode: dto.asset?.code || 'XLM',
+        assetIssuer: dto.asset?.issuer || undefined,
+        type: dto.type,
+        creatorId,
+        expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+        metadataHash: dto.metadataHash,
+      } as Partial<Escrow>);
 
-      if (!creatorBalance) {
-        if (assetCode === 'XLM') {
-          throw new BadRequestException(
-            'Creator account has no XLM balance or does not exist',
-          );
-        } else {
-          throw new BadRequestException(
-            `Creator does not have a trustline for the asset ${assetCode}. Please establish a trustline first.`,
-          );
-        }
-      }
+      const savedEscrow = (await this.escrowRepository.save(
+        escrow,
+      )) as unknown as Escrow;
 
-      if (parseFloat(creatorBalance.balance) < dto.amount) {
-        throw new BadRequestException(
-          `Insufficient balance. Creator has ${creatorBalance.balance} ${assetCode}, needs ${dto.amount}`,
-        );
-      }
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      throw new BadRequestException(
-        `Failed to verify creator balance: ${error instanceof Error ? error.message : 'account may not exist'}`,
-      );
-    }
-
-    // Verify destination account (recipient/seller) has a trustline for the custom token
-    if (assetCode !== 'XLM') {
-      const sellerParty = dto.parties.find((p) => p.role === PartyRole.SELLER);
-      if (!sellerParty) {
-        throw new BadRequestException(
-          'Seller party is required to verify trustline',
-        );
-      }
-
-      const sellerUser = await this.userRepository.findOne({
-        where: { id: sellerParty.userId },
-      });
-      if (!sellerUser || !sellerUser.walletAddress) {
-        throw new BadRequestException(
-          'Seller has no registered wallet address',
-        );
-      }
-
-      try {
-        const sellerAccount = await this.stellarService.getAccount(
-          sellerUser.walletAddress,
-        );
-        const sellerBalance = sellerAccount.balances.find(
-          (b) => b.asset_code === assetCode && b.asset_issuer === assetIssuer,
-        );
-
-        if (!sellerBalance) {
-          throw new BadRequestException(
-            `Destination account ${sellerUser.walletAddress} does not trust the asset ${assetCode}. Please ask the seller to add a trustline for this asset first.`,
-          );
-        }
-      } catch (error) {
-        if (error instanceof BadRequestException) {
-          throw error;
-        }
-        throw new BadRequestException(
-          `Destination account ${sellerUser.walletAddress} is not funded or does not trust the asset ${assetCode}.`,
-        );
-      }
-    }
-
-    let metadataHash: string | undefined;
-    if (dto.metadataHash) {
-      try {
-        metadataHash = normalizeMetadataHash(dto.metadataHash);
-      } catch (error) {
-        throw new BadRequestException(
-          `Invalid metadataHash: ${this.getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    const escrow = this.escrowRepository.create({
-      title: dto.title,
-      description: dto.description,
-      amount: dto.amount,
-      assetCode: dto.asset?.code || 'XLM',
-      assetIssuer: dto.asset?.issuer || undefined,
-      type: dto.type,
-      creatorId,
-      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-      metadataHash,
-    } as Partial<Escrow>);
-
-    const savedEscrow = (await this.escrowRepository.save(
-      escrow,
-    )) as unknown as Escrow;
-
-    const parties = dto.parties.map((partyDto) =>
-      this.partyRepository.create({
-        escrowId: savedEscrow.id,
-        userId: partyDto.userId,
-        role: partyDto.role,
-      }),
-    );
-    await this.partyRepository.save(parties);
-
-    if (dto.conditions && dto.conditions.length > 0) {
-      const conditions = dto.conditions.map((conditionDto) =>
-        this.conditionRepository.create({
+      const parties = dto.parties.map((partyDto) =>
+        this.partyRepository.create({
           escrowId: savedEscrow.id,
-          description: conditionDto.description,
-          type: conditionDto.type,
-          metadata: conditionDto.metadata,
+          userId: partyDto.userId,
+          role: partyDto.role,
         }),
       );
-      await this.conditionRepository.save(conditions);
+      await this.partyRepository.save(parties);
+
+      // Notify each invited party (fire-and-forget; failures must not block escrow creation)
+      for (const partyDto of dto.parties) {
+        const invitedUser = await this.userRepository.findOne({
+          where: { id: partyDto.userId },
+        });
+        this.notificationService
+          .handleEscrowEvent(
+            partyDto.userId,
+            NotificationEventType.PARTY_INVITED,
+            {
+              escrowId: savedEscrow.id,
+              escrowTitle: savedEscrow.title,
+              role: partyDto.role,
+              invitedBy: creatorId,
+              email: invitedUser?.email ?? undefined,
+            },
+            this.generateIdempotencyKey(
+              NotificationEventType.PARTY_INVITED,
+              savedEscrow.id,
+              partyDto.userId,
+              creatorId,
+            ),
+          )
+          .catch(() => undefined);
+      }
+
+      if (dto.conditions && dto.conditions.length > 0) {
+        const conditions = dto.conditions.map((conditionDto) =>
+          this.conditionRepository.create({
+            escrowId: savedEscrow.id,
+            description: conditionDto.description,
+            type: conditionDto.type,
+            metadata: conditionDto.metadata,
+            amount:
+              conditionDto.metadata?.kind === 'milestone' &&
+              typeof conditionDto.metadata.amount === 'string'
+                ? conditionDto.metadata.amount
+                : undefined,
+          }),
+        );
+        await this.conditionRepository.save(conditions);
+      }
+
+      await this.logEvent(
+        savedEscrow.id,
+        EscrowEventType.CREATED,
+        creatorId,
+        { dto },
+        ipAddress,
+      );
+
+      // Dispatch webhook for escrow.created
+      await this.webhookService.dispatchEvent('escrow.created', {
+        escrowId: savedEscrow.id,
+      });
+
+      this.logger.log({
+        msg: 'Escrow created successfully',
+        userId: creatorId,
+        escrowId: savedEscrow.id,
+        escrowType: dto.type,
+      });
+
+      return await this.findOne(savedEscrow.id);
+    } catch (e) {
+      console.error('ESCROW_CREATE_ERROR_TRACE:', e);
+      throw e;
     }
-
-    await this.logEvent(
-      savedEscrow.id,
-      EscrowEventType.CREATED,
-      creatorId,
-      { dto },
-      ipAddress,
-    );
-
-    // Dispatch webhook for escrow.created
-    await this.webhookService.dispatchEvent('escrow.created', {
-      escrowId: savedEscrow.id,
-    });
-
-    return this.findOne(savedEscrow.id);
   }
 
   async findOverview(
@@ -453,16 +396,11 @@ export class EscrowService {
       );
     }
 
-    if (query.assetCode) {
-      qb.andWhere('escrow.assetCode = :assetCode', {
-        assetCode: query.assetCode,
-      });
-    }
-
-    if (query.assetIssuer) {
-      qb.andWhere('escrow.assetIssuer = :assetIssuer', {
-        assetIssuer: query.assetIssuer,
-      });
+    if (query.walletAddress) {
+      qb.andWhere(
+        '(escrow.creatorId = :walletAddress OR party.userId = :walletAddress)',
+        { walletAddress: query.walletAddress },
+      );
     }
 
     const sortOrder = query.sortOrder === SortOrder.ASC ? 'ASC' : 'DESC';
@@ -471,6 +409,76 @@ export class EscrowService {
     const [data, total] = await qb.skip(skip).take(limit).getManyAndCount();
 
     return { data, total, page, limit };
+  }
+
+  async findAllCursor(
+    userId: string,
+    query: ListEscrowsCursorDto,
+  ): Promise<CursorPage<Escrow>> {
+    const limit = query.limit ?? 20;
+    const order = query.sortOrder === CursorSortOrder.ASC ? 'ASC' : 'DESC';
+    const dbType = this.escrowRepository.manager.connection.options.type;
+
+    if (query.createdFrom && query.createdTo) {
+      if (new Date(query.createdFrom) > new Date(query.createdTo)) {
+        throw new BadRequestException('createdFrom must be before createdTo');
+      }
+    }
+
+    const qb = this.escrowRepository.createQueryBuilder('escrow');
+
+    // Subquery instead of a join so each escrow is returned exactly once
+    const partyMatch =
+      'escrow.id IN (SELECT p.escrowId FROM escrow_parties p WHERE p.userId = :userId' +
+      (query.role ? ' AND p.role = :role' : '') +
+      ')';
+    if (query.role) {
+      qb.where(partyMatch, { userId, role: query.role });
+    } else {
+      qb.where(`(escrow.creatorId = :userId OR ${partyMatch})`, { userId });
+    }
+
+    if (query.status) {
+      qb.andWhere('escrow.status = :status', { status: query.status });
+    }
+    if (query.assetCode) {
+      qb.andWhere('escrow.assetCode = :assetCode', {
+        assetCode: query.assetCode,
+      });
+    }
+    if (query.assetIssuer) {
+      qb.andWhere('escrow.assetIssuer = :assetIssuer', {
+        assetIssuer: query.assetIssuer,
+      });
+    }
+    if (query.createdFrom) {
+      qb.andWhere('escrow.createdAt >= :createdFrom', {
+        createdFrom: toDbDate(new Date(query.createdFrom), dbType),
+      });
+    }
+    if (query.createdTo) {
+      qb.andWhere('escrow.createdAt <= :createdTo', {
+        createdTo: toDbDate(new Date(query.createdTo), dbType),
+      });
+    }
+
+    if (query.cursor) {
+      const { sortKey, id } = decodeCursor(query.cursor);
+      const op = order === 'ASC' ? '>' : '<';
+      const key = toDbDate(sortKey, dbType);
+      qb.andWhere(
+        `(escrow.createdAt ${op} :cursorKey OR (escrow.createdAt = :cursorKey AND escrow.id ${op} :cursorId))`,
+        { cursorKey: key, cursorId: id },
+      );
+    }
+
+    const rows = await qb
+      .orderBy('escrow.createdAt', order)
+      .addOrderBy('escrow.id', order)
+      .take(limit + 1)
+      .getMany();
+
+    return buildCursorPage(rows, limit, (row) => row.createdAt);
   }
 
   async findOne(id: string): Promise<Escrow> {
@@ -596,11 +604,16 @@ export class EscrowService {
     });
   }
 
-  async expireBySystem(id: string, reason: string): Promise<Escrow> {
+  async expireBySystem(
+    id: string,
+    reason: string,
+    eventData: Record<string, unknown> = {},
+  ): Promise<Escrow> {
     const escrow = await this.findOne(id);
     return this.expireEscrow(escrow, {
       reason,
       webhookReason: reason,
+      eventData,
     });
   }
 
@@ -627,6 +640,17 @@ export class EscrowService {
       throw new BadRequestException('Escrow is already funded');
     }
 
+    const unacceptedRequired = (escrow.parties ?? []).filter(
+      (p) =>
+        (p.role === PartyRole.BUYER || p.role === PartyRole.SELLER) &&
+        p.status !== PartyStatus.ACCEPTED,
+    );
+    if (unacceptedRequired.length > 0) {
+      throw new BadRequestException(
+        'All buyer and seller parties must accept their invitation before the escrow can be funded',
+      );
+    }
+
     const escrowAmount = Number(escrow.amount);
     if (Number(dto.amount) !== escrowAmount) {
       throw new BadRequestException('Amount must match the escrow amount');
@@ -640,10 +664,16 @@ export class EscrowService {
         walletAddress,
         String(dto.amount),
         escrow.assetCode ?? 'XLM',
-        escrow.assetIssuer ?? undefined,
       );
 
     const fundedAt = new Date();
+
+    this.logger.log({
+      msg: 'Escrow funded successfully',
+      userId,
+      escrowId: id,
+      amount: dto.amount,
+    });
     await this.escrowRepository.update(id, {
       stellarTxHash,
       fundedAt,
@@ -657,6 +687,15 @@ export class EscrowService {
       { stellarTxHash },
       ipAddress,
     );
+
+    await this.notifyEscrowParticipants(
+      await this.findOne(id),
+      NotificationEventType.ESCROW_FUNDED,
+      { escrowId: id, stellarTxHash },
+      userId,
+      null,
+    );
+
     await this.webhookService.dispatchEvent('escrow.funded', {
       escrowId: id,
       stellarTxHash,
@@ -835,6 +874,13 @@ export class EscrowService {
       fulfilledBy: userId,
     });
 
+    this.logger.log({
+      msg: 'Escrow condition fulfilled',
+      userId,
+      escrowId,
+      conditionId,
+    });
+
     return condition;
   }
 
@@ -1003,6 +1049,7 @@ export class EscrowService {
       data: event.data,
       ipAddress: event.ipAddress,
       createdAt: event.createdAt,
+      cursor: event.cursor,
       escrow: event.escrow
         ? {
             id: event.escrow.id,
@@ -1083,6 +1130,25 @@ export class EscrowService {
       disputeId: savedDispute.id,
     });
 
+    // Notify the other escrow participants (fire-and-forget)
+    await this.notifyEscrowParticipants(
+      escrow,
+      NotificationEventType.DISPUTE_RAISED,
+      {
+        escrowId,
+        escrowTitle: escrow.title,
+        disputeId: savedDispute.id,
+      },
+      userId,
+    );
+
+    this.logger.log({
+      msg: 'Dispute filed successfully',
+      userId,
+      escrowId,
+      disputeId: savedDispute.id,
+    });
+
     return this.disputeRepository.findOne({
       where: { id: savedDispute.id },
       relations: ['filedBy'],
@@ -1152,80 +1218,7 @@ export class EscrowService {
         : EscrowStatus.COMPLETED;
 
     validateTransition(escrow.status, nextEscrowStatus);
-
-    // Resolve dispute on-chain if relevant
-    let stellarTxHash: string | undefined;
-    try {
-      const arbitratorParty = escrow.parties.find(
-        (p) => p.role === PartyRole.ARBITRATOR && p.userId === arbitratorUserId,
-      );
-      const buyerParty = escrow.parties.find((p) => p.role === PartyRole.BUYER);
-      const sellerParty = escrow.parties.find(
-        (p) => p.role === PartyRole.SELLER,
-      );
-
-      if (arbitratorParty && buyerParty && sellerParty) {
-        const arbitratorUser = await this.userRepository.findOne({
-          where: { id: arbitratorUserId },
-        });
-        const buyerUser = await this.userRepository.findOne({
-          where: { id: buyerParty.userId },
-        });
-        const sellerUser = await this.userRepository.findOne({
-          where: { id: sellerParty.userId },
-        });
-
-        if (
-          arbitratorUser?.walletAddress &&
-          buyerUser?.walletAddress &&
-          sellerUser?.walletAddress
-        ) {
-          let winnerPublicKey = sellerUser.walletAddress; // Default to seller
-          let splitWinnerAmount: string | undefined;
-
-          if (dto.outcome === DisputeOutcome.REFUNDED_TO_BUYER) {
-            winnerPublicKey = buyerUser.walletAddress;
-          } else if (
-            dto.outcome === DisputeOutcome.SPLIT &&
-            dto.sellerPercent !== undefined
-          ) {
-            winnerPublicKey = sellerUser.walletAddress;
-            const totalAmount = Number(escrow.amount);
-            const asset = await this.assetRepository.findOne({
-              where: {
-                code: escrow.assetCode,
-                issuer: escrow.assetIssuer || undefined,
-              },
-            });
-            const decimals = asset?.decimals ?? 7;
-            const sellerShare = (totalAmount * dto.sellerPercent) / 100;
-            splitWinnerAmount = Math.floor(
-              sellerShare * Math.pow(10, decimals),
-            ).toString();
-          }
-
-          stellarTxHash =
-            await this.stellarIntegrationService.resolveOnChainDispute(
-              escrowId,
-              winnerPublicKey,
-              arbitratorUser.walletAddress,
-              splitWinnerAmount,
-            );
-        }
-      }
-    } catch (error) {
-      this.logger.error(
-        `Failed to resolve dispute on-chain: ${error instanceof Error ? error.message : error}`,
-      );
-      throw new BadRequestException(
-        `On-chain dispute resolution failed: ${error instanceof Error ? error.message : error}`,
-      );
-    }
-
-    await this.escrowRepository.update(escrowId, {
-      status: nextEscrowStatus,
-      ...(stellarTxHash ? { stellarTxHash } : {}),
-    });
+    await this.escrowRepository.update(escrowId, { status: nextEscrowStatus });
 
     dispute.status = DisputeStatus.RESOLVED;
     dispute.resolvedByUserId = arbitratorUserId;
@@ -1257,10 +1250,74 @@ export class EscrowService {
       outcome: dto.outcome,
     });
 
+    // Notify the other escrow participants (fire-and-forget)
+    await this.notifyEscrowParticipants(
+      escrow,
+      NotificationEventType.DISPUTE_RESOLVED,
+      {
+        escrowId,
+        escrowTitle: escrow.title,
+        disputeId: resolved.id,
+        outcome: dto.outcome,
+      },
+      arbitratorUserId,
+    );
+
     return this.disputeRepository.findOne({
       where: { id: resolved.id },
       relations: ['filedBy', 'resolvedBy'],
     }) as Promise<Dispute>;
+  }
+
+  /**
+   * Dispatch a notification to every escrow participant
+   * (creator + parties), excluding the acting user. Failures must not
+   * block the dispute workflow.
+   */
+  private async notifyEscrowParticipants(
+    escrow: Escrow,
+    eventType: NotificationEventType,
+    payload: Record<string, unknown>,
+    actorId: string,
+    excludeUserId: string | null = actorId,
+  ): Promise<void> {
+    const recipientIds = new Set<string>();
+    if (escrow.creatorId) recipientIds.add(escrow.creatorId);
+    for (const party of escrow.parties ?? []) {
+      if (party.userId) recipientIds.add(party.userId);
+    }
+    if (excludeUserId) recipientIds.delete(excludeUserId);
+
+    if (eventType === NotificationEventType.DISPUTE_RAISED) {
+      const admins = await this.userRepository.find({
+        where: [{ role: UserRole.ADMIN }, { role: UserRole.SUPER_ADMIN }],
+      });
+      for (const admin of admins) {
+        if (admin.id !== excludeUserId) recipientIds.add(admin.id);
+      }
+    }
+
+    for (const recipientId of recipientIds) {
+      const recipient = await this.userRepository.findOne({
+        where: { id: recipientId },
+      });
+      await this.notificationService
+        .handleEscrowEvent(
+          recipientId,
+          eventType,
+          {
+            ...payload,
+            email: recipient?.email ?? undefined,
+          },
+          this.generateIdempotencyKey(
+            eventType,
+            escrow.id,
+            recipientId,
+            actorId,
+          ),
+        )
+        .catch(() => undefined);
+    }
   }
 
   async proposeMilestoneChange(
@@ -1387,6 +1444,155 @@ export class EscrowService {
     return condition;
   }
 
+  async acceptPartyInvitation(
+    escrowId: string,
+    partyId: string,
+    userId: string,
+    ipAddress?: string,
+  ): Promise<Party> {
+    const party = await this.partyRepository.findOne({
+      where: { id: partyId, escrowId },
+      relations: ['escrow'],
+    });
+
+    if (!party) throw new NotFoundException('Party invitation not found');
+    if (party.userId !== userId)
+      throw new ForbiddenException(
+        'You can only respond to your own invitation',
+      );
+    if (party.status !== PartyStatus.PENDING)
+      throw new BadRequestException(`Invitation already ${party.status}`);
+
+    party.status = PartyStatus.ACCEPTED;
+    party.respondedAt = new Date();
+    await this.partyRepository.save(party);
+
+    await this.logEvent(
+      escrowId,
+      EscrowEventType.PARTY_ACCEPTED,
+      userId,
+      { partyId },
+      ipAddress,
+    );
+
+    const escrow = party.escrow;
+    if (escrow?.creatorId) {
+      const acceptedUser = await this.userRepository.findOne({
+        where: { id: userId },
+      });
+      this.notificationService
+        .handleEscrowEvent(
+          escrow.creatorId,
+          NotificationEventType.PARTY_ACCEPTED,
+          {
+            escrowId,
+            escrowTitle: escrow.title,
+            role: party.role,
+            acceptedByUserId: userId,
+            email: acceptedUser?.email ?? undefined,
+          },
+          this.generateIdempotencyKey(
+            NotificationEventType.PARTY_ACCEPTED,
+            escrowId,
+            escrow.creatorId,
+            userId,
+          ),
+        )
+        .catch(() => undefined);
+    }
+
+    return party;
+  }
+
+  async rejectPartyInvitation(
+    escrowId: string,
+    partyId: string,
+    userId: string,
+    ipAddress?: string,
+  ): Promise<Party> {
+    const party = await this.partyRepository.findOne({
+      where: { id: partyId, escrowId },
+      relations: ['escrow'],
+    });
+
+    if (!party) throw new NotFoundException('Party invitation not found');
+    if (party.userId !== userId)
+      throw new ForbiddenException(
+        'You can only respond to your own invitation',
+      );
+    if (party.status !== PartyStatus.PENDING)
+      throw new BadRequestException(`Invitation already ${party.status}`);
+
+    party.status = PartyStatus.REJECTED;
+    party.respondedAt = new Date();
+    await this.partyRepository.save(party);
+
+    await this.logEvent(
+      escrowId,
+      EscrowEventType.PARTY_REJECTED,
+      userId,
+      { partyId },
+      ipAddress,
+    );
+
+    const escrow = party.escrow;
+    if (escrow) {
+      const rejectedUser = await this.userRepository.findOne({
+        where: { id: userId },
+      });
+
+      if (escrow.creatorId) {
+        this.notificationService
+          .handleEscrowEvent(
+            escrow.creatorId,
+            NotificationEventType.PARTY_REJECTED,
+            {
+              escrowId,
+              escrowTitle: escrow.title,
+              role: party.role,
+              rejectedByUserId: userId,
+              email: rejectedUser?.email ?? undefined,
+            },
+            this.generateIdempotencyKey(
+              NotificationEventType.PARTY_REJECTED,
+              escrowId,
+              escrow.creatorId,
+              userId,
+            ),
+          )
+          .catch(() => undefined);
+      }
+
+      // Auto-cancel when a required party (buyer or seller) rejects a PENDING escrow
+      const isRequired =
+        party.role === PartyRole.BUYER || party.role === PartyRole.SELLER;
+      if (isRequired && escrow.status === EscrowStatus.PENDING) {
+        await this.escrowRepository.update(escrowId, {
+          status: EscrowStatus.CANCELLED,
+        });
+        await this.logEvent(
+          escrowId,
+          EscrowEventType.CANCELLED,
+          userId,
+          { reason: `Required party (${party.role}) rejected the invitation` },
+          ipAddress,
+        );
+        await this.webhookService.dispatchEvent('escrow.cancelled', {
+          escrowId,
+        });
+      }
+    }
+
+    return party;
+  }
+
+  async getPendingInvitations(userId: string): Promise<Party[]> {
+    return this.partyRepository.find({
+      where: { userId, status: PartyStatus.PENDING },
+      relations: ['escrow', 'escrow.parties', 'escrow.creator'],
+    });
+  }
+
   private async logEvent(
     escrowId: string,
     eventType: EscrowEventType,
@@ -1402,7 +1608,9 @@ export class EscrowService {
       ipAddress,
     });
 
-    return this.eventRepository.save(event);
+    const savedEvent = await this.eventRepository.save(event);
+    this.eventsGateway?.emitEscrowEvent(savedEvent);
+    return savedEvent;
   }
 
   async isUserAdmin(userId: string): Promise<boolean> {
@@ -1420,6 +1628,7 @@ export class EscrowService {
       ipAddress?: string;
       reason: string;
       webhookReason: string | null;
+      eventData?: Record<string, unknown>;
     },
   ): Promise<Escrow> {
     if (isTerminalStatus(escrow.status)) {
@@ -1451,6 +1660,7 @@ export class EscrowService {
       {
         reason: options.reason,
         previousStatus: escrow.status,
+        ...options.eventData,
       },
       options.ipAddress,
     );
@@ -1461,6 +1671,128 @@ export class EscrowService {
     });
 
     return this.findOne(escrow.id);
+  }
+
+  async releaseMilestone(
+    escrowId: string,
+    conditionId: string,
+    userId: string,
+  ): Promise<Escrow> {
+    const escrow = await this.findOne(escrowId);
+
+    if (escrow.type !== EscrowType.MILESTONE) {
+      throw new BadRequestException(
+        'Only milestone escrows support partial releases',
+      );
+    }
+
+    if (escrow.status !== EscrowStatus.ACTIVE) {
+      throw new BadRequestException('Escrow is not active');
+    }
+
+    if (escrow.expiresAt && escrow.expiresAt < new Date()) {
+      throw new BadRequestException('Escrow has expired');
+    }
+
+    // Check if user is depositor or arbitrator
+    const isDepositor = escrow.creatorId === userId;
+    const isArbitrator = escrow.parties.some(
+      (party) => party.userId === userId && party.role === PartyRole.ARBITRATOR,
+    );
+
+    if (!isDepositor && !isArbitrator) {
+      throw new ForbiddenException(
+        'Only depositor or arbitrator can release a milestone',
+      );
+    }
+
+    // Find the condition
+    const condition = escrow.conditions.find((c) => c.id === conditionId);
+    if (!condition) {
+      throw new NotFoundException('Condition not found');
+    }
+
+    if (condition.isReleased) {
+      throw new BadRequestException('This milestone has already been released');
+    }
+
+    if (!condition.isMet) {
+      throw new BadRequestException(
+        'Milestone must be confirmed before releasing',
+      );
+    }
+
+    if (!condition.amount) {
+      throw new BadRequestException('Milestone has no amount defined');
+    }
+
+    // Get the seller/recipient
+    const seller = escrow.parties.find((p) => p.role === PartyRole.SELLER);
+    if (!seller) {
+      throw new BadRequestException('No seller found for this escrow');
+    }
+
+    // Calculate released amount
+    const totalUnits = decimalToBaseUnits(escrow.amount);
+    const releaseAmountUnits = decimalToBaseUnits(condition.amount);
+    const newReleasedUnits =
+      decimalToBaseUnits(escrow.releasedAmount || '0') + releaseAmountUnits;
+    assertAmountConservation(totalUnits, newReleasedUnits, 0n);
+    const releaseAmount = baseUnitsToDecimal(releaseAmountUnits);
+    const newReleasedAmount = baseUnitsToDecimal(newReleasedUnits);
+
+    // Update escrow
+    escrow.releasedAmount = newReleasedAmount;
+
+    // Check if all milestones are released
+    const totalMilestonesUnits = escrow.conditions.reduce(
+      (sum, c) => sum + (c.amount ? decimalToBaseUnits(c.amount) : 0n),
+      0n,
+    );
+
+    // If all are released, set escrow to completed
+    if (
+      newReleasedUnits >= totalUnits ||
+      newReleasedUnits >= totalMilestonesUnits
+    ) {
+      escrow.status = EscrowStatus.COMPLETED;
+      escrow.isReleased = true;
+    }
+
+    // Mark condition as released
+    condition.isReleased = true;
+    condition.releasedAt = new Date();
+
+    // Save changes
+    await this.escrowRepository.save(escrow);
+    await this.conditionRepository.save(condition);
+
+    // Log the event
+    await this.logEvent(escrowId, EscrowEventType.MILESTONE_RELEASED, userId, {
+      conditionId,
+      amount: releaseAmount,
+    });
+
+    // Dispatch webhook
+    await this.webhookService.dispatchEvent('escrow.milestone_released', {
+      escrowId,
+      conditionId,
+      amount: releaseAmount,
+    });
+
+    await this.notifyEscrowParticipants(
+      escrow,
+      NotificationEventType.MILESTONE_RELEASED,
+      {
+        escrowId,
+        escrowTitle: escrow.title,
+        conditionId,
+        amount: releaseAmount,
+      },
+      userId,
+    );
+
+    return this.findOne(escrowId);
   }
 
   async uploadEvidence(
@@ -1499,18 +1831,5 @@ export class EscrowService {
       cid,
       url: this.ipfsService.getGatewayUrl(cid),
     };
-  }
-
-  private getErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-
-    if (typeof error === 'object' && error !== null && 'message' in error) {
-      const message = (error as { message?: unknown }).message;
-      return typeof message === 'string' ? message : String(message);
-    }
-
-    return 'Unknown error';
   }
 }

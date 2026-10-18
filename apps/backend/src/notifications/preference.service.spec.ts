@@ -4,6 +4,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotificationPreference } from './entities/notification-preference.entity';
 import { Repository } from 'typeorm';
 import { NotificationChannel } from './enums/notification-event.enum';
+import { NotificationEventType } from './enums/notification-event.enum';
 
 describe('PreferenceService', () => {
   let service: PreferenceService;
@@ -45,6 +46,38 @@ describe('PreferenceService', () => {
     });
   });
 
+  describe('seedDefaultPreferences', () => {
+    it('should create defaults for every channel when none exist', async () => {
+      repo.find.mockResolvedValue([]);
+      repo.create.mockImplementation((data: any) => data);
+      repo.save.mockImplementation((data: any) => Promise.resolve(data));
+
+      const result = await service.seedDefaultPreferences('u1');
+
+      const channels = Object.values(NotificationChannel);
+      expect(repo.create).toHaveBeenCalledTimes(channels.length);
+      expect(result).toHaveLength(channels.length);
+
+      for (const pref of result) {
+        expect(pref.userId).toBe('u1');
+        expect(pref.enabled).toBe(true);
+        expect(pref.eventTypes).toEqual(
+          expect.arrayContaining(Object.values(NotificationEventType)),
+        );
+      }
+    });
+
+    it('should be idempotent and keep existing preferences', async () => {
+      repo.find.mockResolvedValue([mockPref] as any);
+
+      const result = await service.seedDefaultPreferences('u1');
+
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(result).toEqual([mockPref]);
+    });
+  });
+
   describe('updatePreferences', () => {
     it('should create new preference if not exists', async () => {
       repo.findOne.mockResolvedValue(null);
@@ -59,6 +92,23 @@ describe('PreferenceService', () => {
       expect(repo.create).toHaveBeenCalled();
       expect(repo.save).toHaveBeenCalled();
       expect(result).toEqual([mockPref]);
+    });
+
+    it('should persist digestEnabled', async () => {
+      const existing = { ...mockPref, digestEnabled: false };
+      repo.findOne.mockResolvedValue(existing as any);
+      repo.save.mockImplementation((p: any) => Promise.resolve(p));
+
+      const result = await service.updatePreferences('u1', [
+        {
+          channel: NotificationChannel.EMAIL,
+          enabled: true,
+          eventTypes: [],
+          digestEnabled: true,
+        },
+      ] as any);
+
+      expect(result[0].digestEnabled).toBe(true);
     });
 
     it('should update existing preference', async () => {

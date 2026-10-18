@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { encodeCursor } from '../../../common/pagination/cursor-pagination.util';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, UpdateResult } from 'typeorm';
 
@@ -29,6 +30,8 @@ import { WebhookService } from '../../../services/webhook/webhook.service';
 import { IpfsService } from '../../ipfs/ipfs.service';
 import { AllowedAsset } from '../../assets/entities/allowed-asset.entity';
 import { User, UserRole } from '../../user/entities/user.entity';
+import { NotificationService } from '../../../notifications/notifications.service';
+import { NotificationEventType } from '../../../notifications/enums/notification-event.enum';
 
 // ✅ FIX: missing services
 import { EscrowLifecycleService } from '../escrow-lifecycle.service';
@@ -49,6 +52,7 @@ describe('EscrowService', () => {
 
   let ipfsService: { uploadFile: jest.Mock; getGatewayUrl: jest.Mock };
   let webhookService: { dispatchEvent: jest.Mock };
+  let notificationService: { handleEscrowEvent: jest.Mock };
 
   // ✅ NEW MOCKS
   let lifecycleService: {
@@ -117,6 +121,8 @@ describe('EscrowService', () => {
     const mockPartyRepo = {
       create: jest.fn(),
       save: jest.fn(),
+      findOne: jest.fn(),
+      find: jest.fn(),
     };
 
     const mockConditionRepo = {
@@ -148,6 +154,10 @@ describe('EscrowService', () => {
     const mockIpfsService = {
       uploadFile: jest.fn().mockResolvedValue('mock-cid'),
       getGatewayUrl: jest.fn().mockReturnValue('https://ipfs.io/ipfs/mock-cid'),
+    };
+
+    const mockNotificationService = {
+      handleEscrowEvent: jest.fn().mockResolvedValue(undefined),
     };
 
     // ---------------- NEW SERVICE MOCKS ----------------
@@ -182,6 +192,7 @@ describe('EscrowService', () => {
         { provide: getRepositoryToken(AllowedAsset), useValue: mockAssetRepo },
 
         { provide: IpfsService, useValue: mockIpfsService },
+        { provide: NotificationService, useValue: mockNotificationService },
 
         {
           provide: EscrowStellarIntegrationService,
@@ -238,6 +249,7 @@ describe('EscrowService', () => {
 
     ipfsService = module.get(IpfsService);
     webhookService = module.get(WebhookService);
+    notificationService = module.get(NotificationService);
 
     lifecycleService = module.get(EscrowLifecycleService);
     fundingService = module.get(EscrowFundingService);
@@ -249,5 +261,345 @@ describe('EscrowService', () => {
     expect(service).toBeDefined();
   });
 
-  // ✅ KEEP ALL YOUR EXISTING TESTS BELOW UNCHANGED
+  describe('acceptPartyInvitation', () => {
+    const pendingParty = {
+      ...mockParty,
+      status: PartyStatus.PENDING,
+      respondedAt: null,
+      escrow: {
+        id: 'escrow-123',
+        title: 'Test Escrow',
+        status: EscrowStatus.PENDING,
+        creatorId: 'user-123',
+      },
+    } as Party;
+
+    it('sets status to ACCEPTED and records respondedAt', async () => {
+      partyRepository.findOne.mockResolvedValue({
+        ...pendingParty,
+        status: PartyStatus.PENDING,
+      });
+      partyRepository.save.mockResolvedValue({
+        ...pendingParty,
+        status: PartyStatus.ACCEPTED,
+      });
+      eventRepository.create.mockReturnValue({} as any);
+      eventRepository.save.mockResolvedValue({} as any);
+      userRepository.findOne.mockResolvedValue({
+        id: 'user-456',
+        email: 'seller@test.com',
+      } as User);
+
+      const result = await service.acceptPartyInvitation(
+        'escrow-123',
+        'party-123',
+        'user-456',
+      );
+
+      expect(result.status).toBe(PartyStatus.ACCEPTED);
+      expect(partyRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: PartyStatus.ACCEPTED,
+          respondedAt: expect.any(Date),
+        }),
+      );
+    });
+
+    it('notifies the escrow creator on acceptance', async () => {
+      partyRepository.findOne.mockResolvedValue({
+        ...pendingParty,
+        status: PartyStatus.PENDING,
+      });
+      partyRepository.save.mockResolvedValue({
+        ...pendingParty,
+        status: PartyStatus.ACCEPTED,
+      });
+      eventRepository.create.mockReturnValue({} as any);
+      eventRepository.save.mockResolvedValue({} as any);
+      userRepository.findOne.mockResolvedValue({
+        id: 'user-456',
+        email: 'seller@test.com',
+      } as User);
+
+      await service.acceptPartyInvitation(
+        'escrow-123',
+        'party-123',
+        'user-456',
+      );
+
+      await new Promise(process.nextTick); // flush fire-and-forget
+      expect(notificationService.handleEscrowEvent).toHaveBeenCalledWith(
+        'user-123',
+        NotificationEventType.PARTY_ACCEPTED,
+        expect.objectContaining({ escrowId: 'escrow-123' }),
+        expect.stringMatching(
+          /^PARTY_ACCEPTED:escrow-123:user-456:user-123:\d+$/,
+        ),
+      );
+    });
+
+    it('throws ForbiddenException when user is not the party', async () => {
+      partyRepository.findOne.mockResolvedValue({
+        ...pendingParty,
+        status: PartyStatus.PENDING,
+      });
+
+      await expect(
+        service.acceptPartyInvitation('escrow-123', 'party-123', 'wrong-user'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('throws BadRequestException when invitation is already responded', async () => {
+      partyRepository.findOne.mockResolvedValue({
+        ...pendingParty,
+        status: PartyStatus.ACCEPTED,
+      });
+
+      await expect(
+        service.acceptPartyInvitation('escrow-123', 'party-123', 'user-456'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws NotFoundException when party does not exist', async () => {
+      partyRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.acceptPartyInvitation('escrow-123', 'nonexistent', 'user-456'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('rejectPartyInvitation', () => {
+    const pendingSellerParty = {
+      ...mockParty,
+      status: PartyStatus.PENDING,
+      respondedAt: null,
+      escrow: {
+        id: 'escrow-123',
+        title: 'Test Escrow',
+        status: EscrowStatus.PENDING,
+        creatorId: 'user-123',
+      },
+    } as Party;
+
+    it('sets status to REJECTED and records respondedAt', async () => {
+      partyRepository.findOne.mockResolvedValue({
+        ...pendingSellerParty,
+        status: PartyStatus.PENDING,
+      });
+      partyRepository.save.mockResolvedValue({
+        ...pendingSellerParty,
+        status: PartyStatus.REJECTED,
+      });
+      eventRepository.create.mockReturnValue({} as any);
+      eventRepository.save.mockResolvedValue({} as any);
+      escrowRepository.update = jest.fn().mockResolvedValue({});
+      userRepository.findOne.mockResolvedValue({
+        id: 'user-456',
+        email: 'seller@test.com',
+      } as User);
+
+      const result = await service.rejectPartyInvitation(
+        'escrow-123',
+        'party-123',
+        'user-456',
+      );
+
+      expect(result.status).toBe(PartyStatus.REJECTED);
+      expect(partyRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: PartyStatus.REJECTED,
+          respondedAt: expect.any(Date),
+        }),
+      );
+    });
+
+    it('auto-cancels the escrow when a required party rejects', async () => {
+      partyRepository.findOne.mockResolvedValue({
+        ...pendingSellerParty,
+        status: PartyStatus.PENDING,
+      });
+      partyRepository.save.mockResolvedValue({
+        ...pendingSellerParty,
+        status: PartyStatus.REJECTED,
+      });
+      eventRepository.create.mockReturnValue({} as any);
+      eventRepository.save.mockResolvedValue({} as any);
+      const updateMock = jest.fn().mockResolvedValue({});
+      escrowRepository.update = updateMock;
+      webhookService.dispatchEvent = jest.fn().mockResolvedValue(undefined);
+      userRepository.findOne.mockResolvedValue({
+        id: 'user-456',
+        email: undefined,
+      } as User);
+
+      await service.rejectPartyInvitation(
+        'escrow-123',
+        'party-123',
+        'user-456',
+      );
+
+      expect(updateMock).toHaveBeenCalledWith(
+        'escrow-123',
+        expect.objectContaining({ status: EscrowStatus.CANCELLED }),
+      );
+    });
+
+    it('throws ForbiddenException when user is not the party', async () => {
+      partyRepository.findOne.mockResolvedValue({
+        ...pendingSellerParty,
+        status: PartyStatus.PENDING,
+      });
+
+      await expect(
+        service.rejectPartyInvitation('escrow-123', 'party-123', 'wrong-user'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  describe('getPendingInvitations', () => {
+    it('returns pending party invitations for user', async () => {
+      const pendingParties = [
+        {
+          ...mockParty,
+          status: PartyStatus.PENDING,
+          escrow: { id: 'escrow-123' },
+        },
+      ];
+      partyRepository.find.mockResolvedValue(pendingParties as Party[]);
+
+      const result = await service.getPendingInvitations('user-456');
+
+      expect(partyRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'user-456', status: PartyStatus.PENDING },
+        }),
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    it('returns empty array when no pending invitations', async () => {
+      partyRepository.find.mockResolvedValue([]);
+
+      const result = await service.getPendingInvitations('user-456');
+
+      expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('fund - party acceptance gate', () => {
+    it('throws BadRequestException when seller has not accepted', async () => {
+      const escrowWithPendingSeller = {
+        ...mockEscrow,
+        status: EscrowStatus.PENDING,
+        stellarTxHash: undefined,
+        amount: 100,
+        parties: [
+          {
+            role: PartyRole.BUYER,
+            status: PartyStatus.ACCEPTED,
+            userId: 'user-123',
+          },
+          {
+            role: PartyRole.SELLER,
+            status: PartyStatus.PENDING,
+            userId: 'user-456',
+          },
+        ],
+      };
+      escrowRepository.findOne.mockResolvedValue(
+        escrowWithPendingSeller as Escrow,
+      );
+
+      await expect(
+        service.fund(
+          'escrow-123',
+          { amount: 100 } as any,
+          'user-123',
+          'wallet-addr',
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('findAllCursor', () => {
+    const makeQb = (rows: any[]) => {
+      const qb: any = {};
+      for (const m of ['where', 'andWhere', 'orderBy', 'addOrderBy', 'take']) {
+        qb[m] = jest.fn().mockReturnValue(qb);
+      }
+      qb.getMany = jest.fn().mockResolvedValue(rows);
+      return qb;
+    };
+    const row = (i: number) => ({
+      id: `e${i}`,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)),
+    });
+
+    beforeEach(() => {
+      (escrowRepository as any).manager = {
+        connection: { options: { type: 'sqlite' } },
+      };
+    });
+
+    it('applies filters, fetches limit + 1 and returns nextCursor', async () => {
+      const qb = makeQb([row(3), row(2), row(1)]);
+      escrowRepository.createQueryBuilder.mockReturnValue(qb);
+
+      const result = await service.findAllCursor('u1', {
+        limit: 2,
+        status: 'active',
+        assetCode: 'USDC',
+        role: 'buyer',
+        createdFrom: '2026-01-01T00:00:00Z',
+        createdTo: '2026-02-01T00:00:00Z',
+      } as any);
+
+      expect(qb.take).toHaveBeenCalledWith(3);
+      expect(qb.andWhere).toHaveBeenCalledWith('escrow.status = :status', {
+        status: 'active',
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'escrow.assetCode = :assetCode',
+        { assetCode: 'USDC' },
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'escrow.createdAt >= :createdFrom',
+        { createdFrom: '2026-01-01 00:00:00' },
+      );
+      expect(result.items).toHaveLength(2);
+      expect(result.nextCursor).not.toBeNull();
+    });
+
+    it('applies the keyset condition when a cursor is given', async () => {
+      const qb = makeQb([]);
+      escrowRepository.createQueryBuilder.mockReturnValue(qb);
+      const cursor = encodeCursor(new Date('2026-01-01T00:00:02Z'), 'e2');
+
+      const result = await service.findAllCursor('u1', { cursor } as any);
+
+      const call = qb.andWhere.mock.calls.find(([sql]: [string]) =>
+        sql.includes(':cursorId'),
+      );
+      expect(call[0]).toContain('<');
+      expect(call[1]).toEqual({
+        cursorKey: '2026-01-01 00:00:02',
+        cursorId: 'e2',
+      });
+      expect(result).toEqual({ items: [], nextCursor: null });
+    });
+
+    it('rejects an invalid cursor and an inverted date range', async () => {
+      escrowRepository.createQueryBuilder.mockReturnValue(makeQb([]));
+      await expect(
+        service.findAllCursor('u1', { cursor: 'garbage' } as any),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.findAllCursor('u1', {
+          createdFrom: '2026-02-01',
+          createdTo: '2026-01-01',
+        } as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
 });

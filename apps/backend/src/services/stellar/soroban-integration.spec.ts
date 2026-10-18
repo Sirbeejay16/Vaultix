@@ -34,7 +34,7 @@ describe('EscrowOperationsService Integration', () => {
       token,
       milestones,
       deadline,
-      '0'.repeat(64), // Valid hex metadata hash
+      '1'.repeat(64), // Valid non-zero hex metadata hash
     );
 
     const op = ops[0] as any as {
@@ -53,6 +53,14 @@ describe('EscrowOperationsService Integration', () => {
     const ops = service.createFundingOps('123');
     expect(ops.length).toBe(1);
     expect(ops[0]).toBeDefined();
+  });
+
+  it('round-trips a u64 escrow identifier above JavaScript safe integer range', () => {
+    const value = '18446744073709551615';
+    const encoded = new StellarSdk.xdr.Uint64(value);
+    const decoded = StellarSdk.xdr.Uint64.fromXDR(encoded.toXDR()).toString();
+    expect(decoded).toBe(value);
+    expect(service.createFundingOps(decoded)).toHaveLength(1);
   });
 
   it('should create milestone release operations', () => {

@@ -1,7 +1,7 @@
-import { IsNumber, IsPositive } from 'class-validator';
+import { IsString, Matches } from 'class-validator';
 
 export class FundEscrowDto {
-  @IsNumber()
-  @IsPositive()
-  amount: number;
+  @IsString()
+  @Matches(/^(?=.*[1-9])(?:0|[1-9]\d*)(?:\.\d{1,7})?$/)
+  amount: string;
 }

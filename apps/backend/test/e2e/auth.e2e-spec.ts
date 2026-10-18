@@ -95,7 +95,6 @@ describe('AuthController (e2e)', () => {
       const response = await request(httpServer)
         .post('/auth/verify')
         .send({
-          walletAddress: testWalletAddress,
           signature: signature,
           publicKey: testWalletAddress,
         })
@@ -112,7 +111,6 @@ describe('AuthController (e2e)', () => {
       await request(httpServer)
         .post('/auth/verify')
         .send({
-          walletAddress: testWalletAddress,
           signature: 'invalid-signature',
           publicKey: testWalletAddress,
         })
@@ -134,7 +132,6 @@ describe('AuthController (e2e)', () => {
       const verifyResponse = await request(httpServer)
         .post('/auth/verify')
         .send({
-          walletAddress: testWalletAddress,
           signature: signature,
           publicKey: testWalletAddress,
         })

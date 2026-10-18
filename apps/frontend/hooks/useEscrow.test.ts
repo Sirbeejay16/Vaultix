@@ -1,17 +1,55 @@
+import React from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { useEscrow } from './useEscrow';
-import { http, HttpResponse } from 'msw';
-import { server } from '../mocks/server';
+import { useNotifications } from './useNotifications';
+import { WebSocketProvider } from '@/app/contexts/WebSocketContext';
+import { CanonicalEscrowStatus } from '@/utils/escrowStatus';
+
+jest.mock('socket.io-client', () => ({
+  io: jest.fn(() => ({
+    on: jest.fn(),
+    off: jest.fn(),
+    removeAllListeners: jest.fn(),
+    emit: jest.fn(),
+    disconnect: jest.fn(),
+    // Real sockets expose the underlying Manager here; WebSocketContext
+    // listens on it for low-level reconnect-failure notifications.
+    io: {
+      on: jest.fn(),
+      removeAllListeners: jest.fn(),
+    },
+  })),
+}));
+
+const mockFetch = (response: Partial<Response>) => {
+  global.fetch = jest.fn().mockResolvedValue(response as Response);
+};
 
 describe('useEscrow', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('shares one socket instance between escrow and notification hooks', async () => {
+    const { io } = jest.requireMock('socket.io-client') as { io: jest.Mock };
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(WebSocketProvider, null, children);
+
+    mockFetch({ ok: true, json: async () => ({ id: 'test-123' }) });
+    renderHook(() => {
+      useEscrow('test-123');
+      useNotifications();
+    }, { wrapper });
+
+    await waitFor(() => expect(io).toHaveBeenCalledTimes(1));
+  });
+
   it('successfully fetches an escrow', async () => {
     const mockEscrow = { id: 'test-123', title: 'Test Escrow' };
-    
-    server.use(
-      http.get('/api/escrows/test-123', () => {
-        return HttpResponse.json(mockEscrow);
-      })
-    );
+    mockFetch({
+      ok: true,
+      json: async () => mockEscrow,
+    });
 
     const { result } = renderHook(() => useEscrow('test-123'));
 
@@ -19,16 +57,22 @@ describe('useEscrow', () => {
     
     await waitFor(() => expect(result.current.loading).toBe(false), { timeout: 3000 });
 
-    expect(result.current.escrow).toEqual(mockEscrow);
+    // A response without a status normalizes to the explicit UNKNOWN state
+    // rather than leaking undefined into comparisons.
+    expect(result.current.escrow).toEqual({
+      ...mockEscrow,
+      status: CanonicalEscrowStatus.UNKNOWN,
+    });
     expect(result.current.error).toBe(null);
   });
 
   it('handles 404 error correctly', async () => {
-    server.use(
-      http.get('/api/escrows/not-found', () => {
-        return new HttpResponse(null, { status: 404 });
-      })
-    );
+    mockFetch({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({ message: '404: Escrow not found' }),
+    });
 
     const { result } = renderHook(() => useEscrow('not-found'));
 
@@ -39,11 +83,12 @@ describe('useEscrow', () => {
   });
 
   it('handles server errors correctly', async () => {
-    server.use(
-      http.get('/api/escrows/error', () => {
-        return new HttpResponse(null, { status: 500 });
-      })
-    );
+    mockFetch({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => ({ message: 'Failed to load escrow details' }),
+    });
 
     const { result } = renderHook(() => useEscrow('error'));
 

@@ -13,10 +13,12 @@ import {
 import { IDispute, IDisputeTimeline } from "@/types/escrow";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { CanonicalEscrowStatus } from '@/utils/escrowStatus';
+import { apiClient } from "@/lib/api-client";
 
 interface DisputeSectionProps {
   escrowId: string;
-  escrowStatus: string;
+  escrowStatus: CanonicalEscrowStatus;
   userRole: "creator" | "counterparty" | "arbitrator" | null;
   publicKey: string | null;
   dispute: IDispute | null;
@@ -37,7 +39,7 @@ const DisputeSection: React.FC<DisputeSectionProps> = ({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (escrowStatus === "DISPUTED" && dispute) {
+    if (escrowStatus === CanonicalEscrowStatus.DISPUTED && dispute) {
       fetchTimeline();
     } else {
       setLoading(false);
@@ -49,13 +51,10 @@ const DisputeSection: React.FC<DisputeSectionProps> = ({
       setLoading(true);
 
       // Fetch dispute timeline
-      const timelineResponse = await fetch(
-        `/api/escrows/${escrowId}/dispute/timeline`,
-      );
-      if (timelineResponse.ok) {
-        const timelineData = await timelineResponse.json();
-        setTimeline(timelineData.timeline || []);
-      }
+      const timelineData = await apiClient.get<{
+        timeline?: IDisputeTimeline[];
+      }>(`/escrows/${escrowId}/dispute`);
+      setTimeline(timelineData.timeline ?? []);
     } catch (error) {
       console.error("Error fetching dispute timeline:", error);
     } finally {
@@ -202,40 +201,51 @@ const DisputeSection: React.FC<DisputeSectionProps> = ({
             <FileText className="h-4 w-4" />
             Evidence ({dispute.evidenceUrls.length})
           </h3>
-          <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
             {dispute.evidenceUrls.map((url, index) => {
-              const isImage = url.match(/\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i);
-              const isIpfs = url.includes("ipfs") || url.startsWith("ipfs://");
+              const isImage = url.match(/\.(jpg|jpeg|png|webp)(\?.*)?$/i);
 
               return (
                 <div
                   key={index}
-                  className="border border-gray-200 rounded-lg p-3 bg-gray-50"
+                  className="border border-gray-200 rounded-lg overflow-hidden hover:border-gray-300 transition-colors"
                 >
                   {isImage ? (
-                    <div>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <div className="relative group">
                       <img
                         src={url}
                         alt={`Evidence ${index + 1}`}
-                        className="w-full h-48 object-cover rounded mb-2"
+                        className="w-full h-32 object-cover"
                       />
-                      <p className="text-xs text-gray-600 truncate">{url}</p>
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        <a
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-white text-xs font-medium"
+                        >
+                          View Full
+                        </a>
+                      </div>
                     </div>
                   ) : (
+                    <div className="p-3">
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                        <span className="truncate text-xs text-gray-600">{url}</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="px-2 pb-2">
                     <a
                       href={url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 hover:underline"
+                      className="text-blue-600 hover:text-blue-800 text-xs font-medium"
                     >
-                      <LinkIcon className="h-4 w-4" />
-                      <span className="truncate">{url}</span>
+                      {isImage ? 'View Full' : 'Open Link'}
                     </a>
-                  )}
-                  <p className="text-xs text-gray-400 mt-2">
-                    Uploaded {new Date(dispute.createdAt).toLocaleDateString()}
-                  </p>
+                  </div>
                 </div>
               );
             })}

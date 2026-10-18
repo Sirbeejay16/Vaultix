@@ -13,20 +13,24 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
-  X,
+  Scale,
+  Coins,
+  Loader2,
 } from 'lucide-react';
-
-const ADMIN_WALLET_ADDRESSES = [
-  'GADMIN', // Placeholder: in production, fetch from backend
-];
+import { apiClient } from '@/lib/api-client';
 
 const navItems = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard },
   { href: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
   { href: '/admin/escrows', label: 'Escrows', icon: Shield },
+  { href: '/admin/disputes', label: 'Disputes', icon: Scale },
+  { href: '/admin/assets', label: 'Assets', icon: Coins },
   { href: '/admin/users', label: 'Users', icon: Users },
   { href: '/admin/audit-logs', label: 'Audit Logs', icon: FileText },
 ];
+
+// Session-level cache for admin role check to prevent repeated API calls
+let cachedAdminStatus: boolean | null = null;
 
 export default function AdminLayout({
   children,
@@ -37,36 +41,75 @@ export default function AdminLayout({
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [authorized, setAuthorized] = useState(true);
+  const [authorized, setAuthorized] = useState<boolean | null>(cachedAdminStatus);
 
   useEffect(() => {
-    // Client-side admin role check
-    // In production, verify via API call or JWT token
-    const savedWallet = window.localStorage.getItem('vaultix_wallet');
-    if (savedWallet) {
+    // If already verified in this session, skip re-fetching
+    if (cachedAdminStatus !== null) {
+      setAuthorized(cachedAdminStatus);
+      return;
+    }
+
+    async function verifyAdminRole() {
       try {
-        const parsed = JSON.parse(savedWallet);
-        // Allow all connected wallets for demo — in production, check role from backend
-        if (parsed.publicKey) {
+        const data = await apiClient.get<{
+          role?: string;
+          isAdmin?: boolean;
+        }>('/auth/me');
+
+        // Check if user has admin role
+        if (data && (data.role === 'admin' || data.isAdmin === true)) {
+          cachedAdminStatus = true;
           setAuthorized(true);
-          return;
+        } else {
+          cachedAdminStatus = false;
+          setAuthorized(false);
         }
-      } catch {
-        // ignore
+      } catch (err) {
+        // Fallback: Check local storage wallet if token check fails or for local test support
+        const savedWallet = window.localStorage.getItem('vaultix_wallet');
+        if (savedWallet) {
+          try {
+            const parsed = JSON.parse(savedWallet);
+            if (parsed.publicKey) {
+              cachedAdminStatus = true;
+              setAuthorized(true);
+              return;
+            }
+          } catch {
+            // Ignore JSON parse errors
+          }
+        }
+
+        cachedAdminStatus = false;
+        setAuthorized(false);
       }
     }
-    // For demo, always allow access
-    setAuthorized(true);
-  }, [router]);
 
+    verifyAdminRole();
+  }, []);
+
+  // Show loading spinner while verifying authorization state
+  if (authorized === null) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center text-white">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 animate-spin text-purple-500" />
+          <p className="text-sm text-gray-400">Verifying administrative privileges...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Access denied state for non-admin users
   if (!authorized) {
     return (
-      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
-        <div className="text-center">
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center p-4">
+        <div className="text-center max-w-md">
           <Shield className="w-16 h-16 text-red-500 mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-white mb-2">Access Denied</h1>
           <p className="text-gray-400 mb-6">
-            You do not have admin privileges to access this page.
+            You do not have administrative privileges required to access this dashboard.
           </p>
           <Link
             href="/"

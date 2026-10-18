@@ -1,11 +1,13 @@
-import { FreighterService } from './freighter';
-import { AlbedoService } from './albedo';
-import { LobstrService } from './lobstr';
+import { FreighterService } from "./freighter";
+import { AlbedoService } from "./albedo";
+import { LobstrService } from "./lobstr";
+import { XBullService } from "./xbull";
 
 export enum WalletType {
-  FREIGHTER = 'freighter',
-  ALBEDO = 'albedo',
-  LOBSTR = 'lobstr',
+  FREIGHTER = "freighter",
+  ALBEDO = "albedo",
+  LOBSTR = "lobstr",
+  XBULL = "xbull",
 }
 
 export interface WalletConnection {
@@ -16,13 +18,18 @@ export interface WalletConnection {
 
 export interface IWalletService {
   connect(): Promise<string>;
-  signTransaction(xdr: string): Promise<string>;
+  signTransaction(xdr: string, publicKey?: string): Promise<string>;
   getNetwork?(): Promise<string>;
   isInstalled?(): Promise<boolean>;
   disconnect?(): Promise<void>;
 }
 
 export class WalletServiceFactory {
+  /**
+   * Retrieves the singleton service instance for the specified wallet type.
+   * @param {WalletType} walletType - The target wallet provider identifier.
+   * @returns {IWalletService} The matching wallet service implementation.
+   */
   static getService(walletType: WalletType): IWalletService {
     switch (walletType) {
       case WalletType.FREIGHTER:
@@ -31,11 +38,17 @@ export class WalletServiceFactory {
         return AlbedoService.getInstance();
       case WalletType.LOBSTR:
         return LobstrService.getInstance();
+      case WalletType.XBULL:
+        return XBullService.getInstance();
       default:
         throw new Error(`Unsupported wallet type: ${walletType}`);
     }
   }
 
+  /**
+   * Scans and returns all available wallet providers installed in the client environment.
+   * @returns {Promise<WalletType[]>} List of available wallet types.
+   */
   static async getAvailableWallets(): Promise<WalletType[]> {
     const availableWallets: WalletType[] = [];
 
@@ -49,7 +62,7 @@ export class WalletServiceFactory {
       // Freighter not available
     }
 
-    // Albedo is always available as it's a web-based wallet
+    // Albedo is always available as a web-based wallet
     availableWallets.push(WalletType.ALBEDO);
 
     // Check for Lobstr
@@ -60,6 +73,11 @@ export class WalletServiceFactory {
       }
     } catch {
       // Lobstr not available
+    }
+
+    const xBullService = XBullService.getInstance();
+    if (await xBullService.isInstalled?.()) {
+      availableWallets.push(WalletType.XBULL);
     }
 
     return availableWallets;

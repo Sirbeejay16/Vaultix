@@ -2,9 +2,10 @@
 
 import { useState, useEffect, JSX } from "react";
 import Link from "next/link";
-import { Menu, X, Sun, Moon } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import NotificationBell from "@/components/common/NotificationBell";
-import { useTheme } from "@/components/ThemeProvider";
+import ConnectionStatusIndicator from "@/components/common/ConnectionStatusIndicator";
+import ThemeToggle from "@/components/ThemeToggle";
 
 const NAV_LINKS = [
   { href: "/", label: "Home" },
@@ -17,7 +18,6 @@ const NAV_LINKS = [
 export default function Navbar(): JSX.Element {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
-  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 10);
@@ -39,7 +39,7 @@ export default function Navbar(): JSX.Element {
       <nav
         className={`fixed w-full z-50 transition-all duration-300 ${
           scrolled || isMenuOpen
-            ? "bg-black/90 backdrop-blur-md py-2"
+            ? "bg-background/90 backdrop-blur-md py-2"
             : "bg-transparent py-4"
         }`}
       >
@@ -49,7 +49,7 @@ export default function Navbar(): JSX.Element {
             <Link href="/" className="flex items-center gap-2 min-h-[44px]">
               <div className="h-9 w-9 relative flex-shrink-0">
                 <div className="absolute inset-0 bg-gradient-to-r from-purple-600 to-blue-500 rounded-lg transform rotate-45" />
-                <div className="absolute inset-1 bg-black rounded-lg flex items-center justify-center">
+                <div className="absolute inset-1 bg-background rounded-lg flex items-center justify-center">
                   <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-blue-400 font-bold text-sm">
                     V
                   </span>
@@ -67,34 +67,23 @@ export default function Navbar(): JSX.Element {
                   key={href}
                   href={href}
                   target={external ? "_blank" : undefined}
-                  className="min-h-[44px] flex items-center text-gray-300 hover:text-white transition-colors text-sm font-medium"
+                  className="min-h-[44px] flex items-center text-muted-foreground hover:text-foreground transition-colors text-sm font-medium"
                 >
                   {label}
                 </Link>
               ))}
-              <button
-                onClick={toggleTheme}
-                className="p-2 text-gray-300 hover:text-white rounded-lg focus:outline-none transition-colors cursor-pointer"
-                aria-label="Toggle Theme"
-              >
-                {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
-              </button>
+              <ThemeToggle />
+              <ConnectionStatusIndicator />
               <NotificationBell />
             </div>
 
             {/* Mobile controls */}
             <div className="md:hidden flex items-center gap-2">
-              <button
-                onClick={toggleTheme}
-                className="p-2 text-gray-300 hover:text-white rounded-lg focus:outline-none transition-colors cursor-pointer"
-                aria-label="Toggle Theme"
-              >
-                {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
-              </button>
+              <ThemeToggle />
               <NotificationBell />
               <button
                 onClick={() => setIsMenuOpen((v) => !v)}
-                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-300 hover:text-white focus:outline-none rounded-lg"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-muted-foreground hover:text-foreground rounded-lg"
                 aria-label={isMenuOpen ? "Close menu" : "Open menu"}
                 aria-expanded={isMenuOpen}
               >
@@ -112,7 +101,7 @@ export default function Navbar(): JSX.Element {
             className="absolute inset-0 bg-black/50"
             onClick={() => setIsMenuOpen(false)}
           />
-          <div className="absolute top-0 right-0 h-full w-72 bg-black/95 backdrop-blur-xl flex flex-col pt-20 pb-8 px-6 shadow-2xl">
+          <div className="absolute top-0 right-0 h-full w-72 bg-popover text-popover-foreground backdrop-blur-xl flex flex-col pt-20 pb-8 px-6 shadow-2xl">
             <nav className="flex flex-col gap-1">
               {NAV_LINKS.map(({ href, label, external }) => (
                 <Link
@@ -120,7 +109,7 @@ export default function Navbar(): JSX.Element {
                   href={href}
                   target={external ? "_blank" : undefined}
                   onClick={() => setIsMenuOpen(false)}
-                  className="min-h-[48px] flex items-center text-gray-300 hover:text-white hover:bg-white/5 rounded-lg px-3 transition-colors text-base font-medium"
+                  className="min-h-[48px] flex items-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-lg px-3 transition-colors text-base font-medium"
                 >
                   {label}
                 </Link>

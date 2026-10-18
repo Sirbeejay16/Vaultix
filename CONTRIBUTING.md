@@ -11,6 +11,7 @@ Thank you for your interest in contributing to Vaultix! This document provides g
 - [Coding Standards](#coding-standards)
 - [Testing](#testing)
 - [Documentation](#documentation)
+- [API Versioning Strategy](#api-versioning-strategy)
 - [Community](#community)
 
 ## Code of Conduct
@@ -31,15 +32,15 @@ cd vaultix
 Follow the setup instructions in [README.md](README.md) to install dependencies and configure your environment:
 
 ```bash
-# Install dependencies
-pnpm install
+# Install dependencies (root tooling + git hooks)
+npm install
 
 # Set up environment variables
 cp apps/backend/.env.example apps/backend/.env
 # Edit .env with your configuration
 
 # Run database migrations
-cd apps/backend && pnpm typeorm migration:run
+cd apps/backend && npm run typeorm -- migration:run
 ```
 
 ### 3. Find an Issue
@@ -51,6 +52,45 @@ Browse our [GitHub Issues](https://github.com/Vaultix/vaultix/issues) to find so
 - **Priority: High**: Important issues for the roadmap
 
 **Tip**: Comment on an issue before starting to ensure it's available and no one else is working on it.
+
+## Package Manager
+
+Vaultix standardises on **npm** (the version bundled with Node.js 20+).
+
+- Each package keeps its own `package-lock.json`; these are the only lockfiles
+  committed.
+- `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `yarn.lock` must not be added -
+  a `lockfile-guard` CI job fails the build if they are.
+- The root `package.json` pins the manager and Node version via the
+  `packageManager` and `engines` fields.
+
+```bash
+npm install                        # install root tooling
+npm --prefix apps/backend install  # install an app's dependencies
+```
+
+## Make Targets
+
+Install GNU Make, Node.js 20+ with npm 10+, and the dependencies for each app
+you intend to work on. Rust is needed for contract tests; Docker with the
+Compose plugin is needed for the local PostgreSQL targets. From the repository
+root, use `make help` to list commands:
+
+```bash
+make dev            # run backend and frontend dev servers concurrently
+make test           # backend, frontend, and mobile tests
+make lint           # root and app linters
+make build          # backend and frontend builds
+make db-up          # start PostgreSQL in Docker
+make db-reset       # delete the PostgreSQL data volume and recreate it
+make contract-test  # run Soroban contract tests with Cargo
+```
+
+These targets delegate to the npm scripts, Cargo, and Docker Compose commands
+already used by the project. `db-reset` is destructive: it removes all local
+data stored in the Compose volume. Make targets work on Linux and macOS; on
+Windows, use WSL with Make, Bash, and the relevant tools installed. Running the
+backend and frontend together requires both apps' dependencies to be installed.
 
 ## Development Workflow
 
@@ -68,6 +108,7 @@ chore/update-dependencies             # Maintenance tasks
 ```
 
 **Examples:**
+
 - `feat/add-dispute-resolution-modal`
 - `fix/wallet-connection-timeout`
 - `docs/contributing-guidelines`
@@ -75,6 +116,7 @@ chore/update-dependencies             # Maintenance tasks
 ### Making Changes
 
 1. **Create a branch**:
+
    ```bash
    git checkout -b feat/your-feature-name
    ```
@@ -84,8 +126,14 @@ chore/update-dependencies             # Maintenance tasks
 3. **Write tests**: Add tests for new functionality
 
 4. **Run checks locally**:
+
    ```bash
-   pnpm turbo run lint test build
+   npm --prefix apps/backend run lint
+   npm --prefix apps/frontend run lint
+   npm --prefix apps/backend test
+   npm --prefix apps/frontend test
+   npm --prefix apps/backend run build
+   npm --prefix apps/frontend run build
    ```
 
 5. **Keep your branch updated**:
@@ -107,6 +155,7 @@ footer (optional)
 ```
 
 **Types:**
+
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation changes
@@ -148,9 +197,9 @@ Add detailed prerequisites section and troubleshooting tips
 Ensure your PR meets these criteria:
 
 - [ ] **Tests**: Added/updated unit or E2E tests for new functionality
-- [ ] **Linting**: Code passes `pnpm turbo run lint` with no errors
-- [ ] **TypeScript**: No type errors (`pnpm turbo run type-check` if configured)
-- [ ] **Build**: Project builds successfully (`pnpm turbo run build`)
+- [ ] **Linting**: Code passes `npm --prefix apps/<app> run lint` with no errors
+- [ ] **TypeScript**: No type errors (each app's build runs `tsc`)
+- [ ] **Build**: Each app builds successfully (`npm --prefix apps/<app> run build`)
 - [ ] **Description**: Clear description explaining the "what" and "why"
 - [ ] **Issue Link**: Reference related GitHub issue (e.g., "Closes #123")
 - [ ] **Screenshots**: For UI changes, include before/after screenshots
@@ -163,27 +212,33 @@ When creating a PR, use this template:
 
 ```markdown
 ## Description
+
 Brief description of changes and what problem this solves
 
 ## Related Issue
+
 Closes #123
 
 ## Type of Change
+
 - [ ] Bug fix (non-breaking change which fixes an issue)
 - [ ] New feature (non-breaking change which adds functionality)
 - [ ] Breaking change (fix or feature that would cause existing functionality to change)
 - [ ] Documentation update
 
 ## Testing Done
+
 - [ ] Unit tests added/updated
 - [ ] E2E tests added/updated
 - [ ] Manually tested locally
 
 ## Screenshots (if UI changes)
+
 Before: [screenshot]
 After: [screenshot]
 
 ## Checklist
+
 - [ ] My code follows the project's coding standards
 - [ ] I have run lint and tests locally
 - [ ] I have updated documentation as needed
@@ -206,6 +261,7 @@ After: [screenshot]
 - Use Prettier for formatting (`.prettierrc`)
 - Prefer async/await for asynchronous code
 - Use meaningful variable names
+- **Frontend colours:** use the semantic theme tokens (`bg-background`, `text-muted-foreground`, `bg-brand`, …), not raw palette classes like `bg-white` or `text-gray-700`, so the UI works in both light and dark themes. See [Theming](apps/frontend/README.md#theming-light--dark--system).
 
 **Example:**
 
@@ -219,13 +275,13 @@ After: [screenshot]
 async createEscrow(data: CreateEscrowDto): Promise<Escrow> {
   // Validate input
   await this.validateEscrowData(data);
-  
+
   // Create escrow record
   const escrow = await this.escrowRepository.create(data);
-  
+
   // Emit event
   await this.eventEmitter.emit('escrow.created', escrow);
-  
+
   return escrow;
 }
 ```
@@ -268,17 +324,31 @@ pub fn create_escrow(
 Organize code logically following the existing structure:
 
 **Backend:**
+
 ```
 apps/backend/src/
 ├── modules/        # Feature modules (auth, escrow, stellar, etc.)
-├── entities/       # TypeORM database entities
 ├── guards/         # Auth & authorization guards
 ├── middleware/     # Custom middleware
 ├── services/       # Business logic
 └── utils/          # Shared utilities
 ```
 
+### Entity Locations
+
+The canonical entity files live within each module (co-located with their feature), not in a top-level `src/entities/` directory:
+
+| Entity | Canonical Location |
+|--------|-------------------|
+| Escrow | `src/modules/escrow/entities/escrow.entity.ts` |
+| Dispute | `src/modules/escrow/entities/dispute.entity.ts` |
+| Condition | `src/modules/escrow/entities/condition.entity.ts` |
+| Notification | `src/notifications/entities/notification.entity.ts` |
+
+Do not create or import from `src/entities/` — that directory has been removed. When working with backend entities, always reference the module-co-located canonical file and register it in `src/app.module.ts` / `src/data-source.ts`.
+
 **Frontend:**
+
 ```
 apps/frontend/
 ├── app/            # Next.js app router pages
@@ -302,17 +372,14 @@ apps/frontend/
 ### Running Tests
 
 ```bash
-# All tests across monorepo
-pnpm turbo run test
+# Backend tests
+cd apps/backend && npm test
 
-# Backend tests only
-cd apps/backend && pnpm test
-
-# Frontend tests only
-cd apps/frontend && pnpm test
+# Frontend tests
+cd apps/frontend && npm test
 
 # E2E tests
-pnpm turbo run test:e2e
+cd apps/frontend && npm run test:e2e
 
 # Contract tests
 cd apps/onchain && cargo test
@@ -323,7 +390,7 @@ cd apps/onchain && cargo test
 **Backend Unit Test** (Jest):
 
 ```typescript
-describe('EscrowService', () => {
+describe("EscrowService", () => {
   let service: EscrowService;
 
   beforeEach(async () => {
@@ -334,26 +401,28 @@ describe('EscrowService', () => {
     service = module.get<EscrowService>(EscrowService);
   });
 
-  it('should create escrow with valid data', async () => {
+  it("should create escrow with valid data", async () => {
     const escrowData = {
       amount: 100,
-      recipient: 'test-address',
-      milestones: ['Milestone 1'],
+      recipient: "test-address",
+      milestones: ["Milestone 1"],
     };
-    
+
     const result = await service.create(escrowData);
-    
+
     expect(result).toBeDefined();
-    expect(result.status).toBe('pending');
+    expect(result.status).toBe("pending");
     expect(result.amount).toBe(100);
   });
 
-  it('should reject escrow with invalid amount', async () => {
-    const invalidData = { /* ... */ };
-    
-    await expect(service.create(invalidData))
-      .rejects
-      .toThrow(EscrowValidationError);
+  it("should reject escrow with invalid amount", async () => {
+    const invalidData = {
+      /* ... */
+    };
+
+    await expect(service.create(invalidData)).rejects.toThrow(
+      EscrowValidationError,
+    );
   });
 });
 ```
@@ -367,24 +436,24 @@ import { CreateEscrowForm } from '@/components/escrow/create-escrow-form';
 describe('CreateEscrowForm', () => {
   it('submits form with valid data', async () => {
     const mockSubmit = jest.fn();
-    
+
     render(<CreateEscrowForm onSubmit={mockSubmit} />);
-    
+
     // Fill form
     fireEvent.change(screen.getByLabelText(/amount/i), {
       target: { value: '100' }
     });
-    
+
     fireEvent.change(screen.getByLabelText(/recipient/i), {
       target: { value: 'GABC...DEF' }
     });
-    
+
     // Submit
     fireEvent.click(screen.getByText('Create Escrow'));
-    
+
     // Wait for submission
     await screen.findByText(/escrow created successfully/i);
-    
+
     expect(mockSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         amount: 100,
@@ -395,10 +464,10 @@ describe('CreateEscrowForm', () => {
 
   it('shows validation errors for invalid input', async () => {
     render(<CreateEscrowForm onSubmit={jest.fn()} />);
-    
+
     // Submit empty form
     fireEvent.click(screen.getByText('Create Escrow'));
-    
+
     expect(await screen.findByText(/amount is required/i))
       .toBeInTheDocument();
   });
@@ -412,20 +481,20 @@ describe('CreateEscrowForm', () => {
 fn test_create_escrow() {
     let env = Env::default();
     env.mock_all_auths();
-    
+
     let contract_id = env.register_contract(None, VaultixEscrow);
     let depositor = Address::generate(&env);
     let recipient = Address::generate(&env);
     let amount = 1000_000_000; // 1 XLM in stroops
-    
+
     // Create escrow
     let escrow_id = VaultixEscrowClient::new(&env, &contract_id)
         .create_escrow(&depositor, &recipient, &amount);
-    
+
     // Verify escrow was created
     let escrow = VaultixEscrowClient::new(&env, &contract_id)
         .get_escrow(&escrow_id);
-    
+
     assert_eq!(escrow.depositor, depositor);
     assert_eq!(escrow.recipient, recipient);
     assert_eq!(escrow.amount, amount);
@@ -435,6 +504,7 @@ fn test_create_escrow() {
 ### Test Coverage Goals
 
 Aim for high coverage on critical paths:
+
 - ✅ Authentication flows (wallet connect, JWT)
 - ✅ Escrow creation and fund release
 - ✅ Milestone tracking and approval
@@ -450,13 +520,13 @@ Aim for high coverage on critical paths:
 ```typescript
 /**
  * Validates and processes escrow milestone completion
- * 
+ *
  * @param escrowId - The ID of the escrow to update
  * @param milestoneIndex - Index of the milestone to complete
  * @param proofData - Optional proof of milestone completion
- * 
+ *
  * @returns Updated escrow entity
- * 
+ *
  * @throws {NotFoundError} If escrow doesn't exist
  * @throws {InvalidStateError} If escrow is not in active state
  */
@@ -489,7 +559,7 @@ async completeMilestone(
 /// Returns `Error::Unauthorized` if caller is not authorized
 /// Returns `Error::InvalidState` if escrow conditions not met
 #[contractmethod]
-pub fn release_funds(e: &Env, escrow_id: u64, caller: Address) 
+pub fn release_funds(e: &Env, escrow_id: u64, caller: Address)
     -> Result<Bytes, Error> {
     // Implementation
 }
@@ -498,42 +568,154 @@ pub fn release_funds(e: &Env, escrow_id: u64, caller: Address)
 ### Updating README
 
 Update README.md when:
+
 - Adding new features or capabilities
 - Changing setup requirements or prerequisites
 - Modifying architecture or repository structure
 - Adding new configuration options
 - Updating deployment instructions
 
+## API Versioning Strategy
+
+Vaultix uses **URL-based API versioning** to ensure backward compatibility as the platform evolves.
+
+### Current Version
+
+The current stable API version is **v1**. All endpoints are prefixed with `/v1/`.
+
+```
+GET /v1/escrows
+POST /v1/auth/verify
+GET /v1/admin/users
+```
+
+### Version Lifecycle
+
+| Version | Status     | Sunset Date | Notes                               |
+| ------- | ---------- | ----------- | ----------------------------------- |
+| v1      | **Active** | -           | Current stable API                  |
+| v2      | Scaffold   | -           | Placeholder endpoints, not yet live |
+
+### Backward Compatibility
+
+Unversioned requests (e.g., `/escrows`, `/auth/verify`) are automatically rewritten to `/v1/...` by the version negotiation middleware. These unversioned endpoints return a `Sunset` header indicating the deprecation deadline:
+
+```
+Sunset: 2026-12-31T23:59:59.000Z
+Link: </v1/escrows>; rel="successor-version"
+X-API-Version: v1
+```
+
+**All API consumers should migrate to versioned URLs before the sunset date.**
+
+### Response Headers
+
+| Header          | Description                                  |
+| --------------- | -------------------------------------------- |
+| `X-API-Version` | The resolved API version (e.g., `v1`)        |
+| `Sunset`        | RFC 8594 sunset date for deprecated versions |
+| `Deprecation`   | Set to `true` when a version is deprecated   |
+| `Link`          | Points to the successor version URL          |
+
+### Adding a New Version
+
+1. **Create controllers** with explicit version:
+
+   ```typescript
+   @Controller({ path: 'escrows', version: '2' })
+   export class EscrowV2Controller { ... }
+   ```
+
+2. **Register in a module** and import in `AppModule`.
+
+3. **Update the version sunset map** in `api-version.middleware.ts`:
+
+   ```typescript
+   const API_VERSION_SUNSETS: Record<string, string | null> = {
+     v1: null, // active
+     v2: null, // active (new)
+   };
+   ```
+
+4. **Add to Swagger UI** version selector in `main.ts`.
+
+5. **Deprecate old versions** by setting a sunset date:
+   ```typescript
+   v1: '2027-06-30T23:59:59.000Z', // deprecated
+   ```
+
+### Version-Neutral Endpoints
+
+Some endpoints are version-neutral (accessible without a version prefix):
+
+- `/health` - Health check probes
+- `/api/docs` - Swagger UI
+
+Use `VERSION_NEUTRAL` in the controller decorator:
+
+```typescript
+@Controller({ path: 'health', version: VERSION_NEUTRAL })
+```
+
+### V2 Design Goals (Planned)
+
+- Cursor-based pagination (replacing offset-based)
+- Envelope responses: `{ data, meta, links }`
+- Standardized filtering query parameters
+- RFC 7807 Problem Details error format
+- HATEOAS links for related resources
+
+### Frontend Integration
+
+The frontend API client automatically prepends `/v1` to all requests:
+
+```typescript
+// lib/api-client.ts
+const API_VERSION_PREFIX = "/v1";
+const url = `${API_BASE_URL}${API_VERSION_PREFIX}${path}`;
+```
+
 ## Monorepo Tips
 
-### Filtering Commands
+### Running a command in one app
 
 ```bash
-# Build only backend
-pnpm turbo run build --filter=backend
+# Build the backend
+npm --prefix apps/backend run build
 
-# Build backend and its dependencies
-pnpm turbo run build --filter=backend...
+# Run the frontend dev server
+npm --prefix apps/frontend run dev
 
-# Run dev server for frontend only
-pnpm turbo run dev --filter=frontend
-
-# Test specific app
-pnpm turbo run test --filter=@vaultix/backend
+# Test a specific app
+npm --prefix apps/backend test
 ```
 
 ### Adding Dependencies
 
 ```bash
-# Add to specific app
-cd apps/backend && pnpm add @nestjs/config
+# Add to a specific app
+cd apps/backend && npm install @nestjs/config
 
-# Add dev dependency to frontend
-cd apps/frontend && pnpm add -D @types/node
+# Add a dev dependency to an app
+cd apps/frontend && npm install -D @types/node
 
-# Add to workspace root (shared)
-pnpm add axios
+# Add to the repository root (shared tooling)
+npm install axios
 ```
+
+## Dependency Audits & Smoke Tests
+
+- **Dependency audit** - `./scripts/audit.sh` runs `npm audit` (JS apps) and
+  `cargo audit` (`apps/onchain`) and fails on HIGH/CRITICAL advisories. It runs
+  weekly in CI and whenever a lockfile changes. Install `cargo-audit` locally
+  with `cargo install cargo-audit`.
+- **API smoke test** - `./scripts/smoke-test.sh <base-url>` verifies health and
+  auth endpoints (status codes and latency) and exits non-zero on failure. It is
+  used by the `API Smoke Test` workflow and for staging/production verification.
+
+Both scripts live in `scripts/` and require `curl` (plus Node.js for the audit
+summariser). See the README's "Dependency Audit & Health Checks" section for the
+full option list.
 
 ## Questions?
 
@@ -544,6 +726,7 @@ pnpm add axios
 ## Recognition
 
 Contributors will be recognized in:
+
 - README.md contributors section
 - Release notes
 - Annual contributor spotlight
@@ -551,6 +734,7 @@ Contributors will be recognized in:
 ## What We're Looking For
 
 **High Priority Contributions:**
+
 - ✅ Bug fixes (especially issues labeled `bug` or `priority: high`)
 - ✅ Test coverage improvements
 - ✅ Documentation enhancements
@@ -559,6 +743,7 @@ Contributors will be recognized in:
 - ✅ Security enhancements
 
 **Post-MVP Features** (discuss before implementing):
+
 - Multi-asset support (custom tokens, USDC)
 - Advanced analytics dashboard
 - Mobile applications
