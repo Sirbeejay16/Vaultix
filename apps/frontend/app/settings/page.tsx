@@ -14,8 +14,6 @@ interface NotificationPref {
   inApp: boolean;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
 // ── Section components ─────────────────────────────────────────────────────
 
 function SectionCard({
@@ -28,10 +26,10 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-      <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
-        <Icon className="w-4 h-4 text-blue-500" />
-        <h2 className="font-semibold text-gray-800">{title}</h2>
+    <div className="bg-card text-card-foreground rounded-xl border border-border shadow-sm overflow-hidden">
+      <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+        <Icon className="w-4 h-4 text-primary" />
+        <h2 className="font-semibold text-card-foreground">{title}</h2>
       </div>
       <div className="px-5 py-4">{children}</div>
     </div>
@@ -107,65 +105,65 @@ function ProfileSectionInner() {
     <div className="space-y-5">
       <div className="flex items-center gap-4">
         {avatar ? (
-          <img src={avatar} alt="Profile avatar" className="h-16 w-16 rounded-full object-cover border border-gray-200" />
+          <img src={avatar} alt="Profile avatar" className="h-16 w-16 rounded-full object-cover border border-border" />
         ) : (
-          <div className="h-16 w-16 rounded-full bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-400">
+          <div className="h-16 w-16 rounded-full bg-muted border border-border flex items-center justify-center text-muted-foreground">
             <User className="h-7 w-7" />
           </div>
         )}
         <div>
-          <label className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md cursor-pointer hover:bg-gray-50">
+          <label className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-foreground border border-input rounded-md cursor-pointer hover:bg-accent">
             <ImagePlus className="h-4 w-4" />
             Upload avatar
             <input type="file" accept="image/*" onChange={handleAvatarUpload} className="sr-only" aria-label="Upload avatar" />
           </label>
-          <p className="mt-1 text-xs text-gray-500">Image files up to 2 MB</p>
+          <p className="mt-1 text-xs text-muted-foreground">Image files up to 2 MB</p>
         </div>
       </div>
       <div>
-        <label htmlFor="display-name" className="block text-xs text-gray-500 mb-1">Display name</label>
+        <label htmlFor="display-name" className="block text-xs text-muted-foreground mb-1">Display name</label>
         <input
           id="display-name"
           value={displayName}
           onChange={(event) => { setDisplayName(event.target.value); setProfileSaved(false); }}
           maxLength={80}
           placeholder="Enter your display name"
-          className="w-full max-w-sm px-3 py-2 text-sm text-gray-800 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full max-w-sm px-3 py-2 text-sm text-foreground border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
         />
       </div>
       <div>
-        <p className="text-xs text-gray-500 mb-1">Connected public keys</p>
+        <p className="text-xs text-muted-foreground mb-1">Connected public keys</p>
         {wallet ? (
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <code className="min-w-0 text-sm font-mono bg-gray-50 border border-gray-200 px-3 py-1.5 rounded-md break-all">
+              <code className="min-w-0 text-sm font-mono bg-muted text-foreground border border-border px-3 py-1.5 rounded-md break-all">
                 {wallet.publicKey}
               </code>
               <button
                 onClick={handleCopy}
-                className="flex-shrink-0 p-1.5 rounded hover:bg-gray-100 transition-colors"
+                className="flex-shrink-0 p-1.5 rounded hover:bg-accent transition-colors"
                 aria-label="Copy public key"
               >
                 {copied ? (
                   <Check className="w-4 h-4 text-green-500" />
                 ) : (
-                  <Copy className="w-4 h-4 text-gray-400" />
+                  <Copy className="w-4 h-4 text-muted-foreground" />
                 )}
               </button>
             </div>
-            <div className="flex gap-4 text-sm text-gray-500">
-              <span>Network: <span className="font-medium text-gray-700 capitalize">{wallet.network}</span></span>
-              <span>Provider: <span className="font-medium text-gray-700 capitalize">{wallet.walletType}</span></span>
+            <div className="flex gap-4 text-sm text-muted-foreground">
+              <span>Network: <span className="font-medium text-foreground capitalize">{wallet.network}</span></span>
+              <span>Provider: <span className="font-medium text-foreground capitalize">{wallet.walletType}</span></span>
             </div>
           </div>
         ) : (
-          <p className="text-sm text-gray-400 italic">No public keys connected</p>
+          <p className="text-sm text-muted-foreground italic">No public keys connected</p>
         )}
       </div>
-      {profileError && <p role="alert" className="text-sm text-red-600">{profileError}</p>}
+      {profileError && <p role="alert" className="text-sm text-destructive">{profileError}</p>}
       <button
         onClick={handleSaveProfile}
-        className="inline-flex items-center gap-2 text-sm px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+        className="inline-flex items-center gap-2 text-sm px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
       >
         <Save className="h-4 w-4" />
         {profileSaved ? "Profile saved" : "Save profile"}
@@ -185,7 +183,7 @@ function ProfileSection() {
       {mounted ? (
         <ProfileSectionInner />
       ) : (
-        <p className="text-sm text-gray-400 italic">Loading…</p>
+        <p className="text-sm text-muted-foreground italic">Loading…</p>
       )}
     </SectionCard>
   );
@@ -255,11 +253,11 @@ function Toggle({
       aria-label={label}
       onClick={onChange}
       className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-        checked ? "bg-blue-600" : "bg-gray-300"
+        checked ? "bg-primary" : "bg-input"
       }`}
     >
       <span
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-background shadow transition-transform ${
           checked ? "translate-x-4" : "translate-x-1"
         }`}
       />
@@ -308,7 +306,7 @@ function NotificationPrefsSection() {
   return (
     <SectionCard title="Notification Preferences" icon={Bell}>
       <div className="space-y-3">
-        <div className="grid grid-cols-[1fr_auto_auto] gap-x-6 text-xs text-gray-400 font-medium uppercase tracking-wider px-1">
+        <div className="grid grid-cols-[1fr_auto_auto] gap-x-6 text-xs text-muted-foreground font-medium uppercase tracking-wider px-1">
           <span>Event</span>
           <span>Email</span>
           <span>In-app</span>
@@ -318,16 +316,16 @@ function NotificationPrefsSection() {
             key={pref.eventType}
             className="grid grid-cols-[1fr_auto_auto] gap-x-6 items-center"
           >
-            <span className="text-sm text-gray-700">{pref.label}</span>
+            <span className="text-sm text-foreground">{pref.label}</span>
             <Toggle label={`${pref.label} email notifications`} checked={pref.email} onChange={() => toggle(i, "email")} />
             <Toggle label={`${pref.label} in-app notifications`} checked={pref.inApp} onChange={() => toggle(i, "inApp")} />
           </div>
         ))}
-        {saveError && <p role="alert" className="text-sm text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-sm text-destructive">{saveError}</p>}
         <div className="pt-2">
           <button
             onClick={handleSave}
-            className="text-sm px-4 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            className="text-sm px-4 py-1.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
           >
             {saved ? "Saved!" : "Save preferences"}
           </button>
@@ -347,11 +345,11 @@ function ApiKeysSection() {
 
 export default function SettingsPage() {
   return (
-    <div className="min-h-screen bg-gray-50 py-10 px-4">
+    <div className="min-h-screen bg-background text-foreground py-10 px-4">
       <div className="max-w-2xl mx-auto space-y-6">
         <div className="flex items-center gap-3 mb-2">
-          <Shield className="w-6 h-6 text-blue-500" />
-          <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+          <Shield className="w-6 h-6 text-primary" />
+          <h1 className="text-2xl font-bold text-foreground">Settings</h1>
         </div>
 
         <ProfileSection />
